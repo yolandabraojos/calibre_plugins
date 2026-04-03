@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Libro A (azul) -->
+  <rect x="13" y="22" width="43" height="57" rx="3" fill="#1a4a7a"/>
+  <rect x="17" y="21" width="41" height="57" rx="3" fill="#2d6a9f"/>
+  <rect x="17" y="21" width="6" height="57" fill="#1a4a7a" rx="2"/>
+  <rect x="55" y="24" width="5" height="50" rx="1" fill="#f5f0e8"/>
+  <rect x="22" y="28" width="30" height="4" rx="2" fill="#f5f0e8" opacity="0.9"/>
+  <line x1="22" y1="36" x2="52" y2="36" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="22" y1="42" x2="52" y2="42" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="22" y1="48" x2="46" y2="48" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="22" y1="54" x2="52" y2="54" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="22" y1="60" x2="42" y2="60" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="22" y1="66" x2="52" y2="66" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+
+  <!-- Libro B (naranja) -->
+  <rect x="72" y="22" width="43" height="57" rx="3" fill="#c4652a"/>
+  <rect x="70" y="21" width="41" height="57" rx="3" fill="#e8813a"/>
+  <rect x="70" y="21" width="6" height="57" fill="#c4652a" rx="2"/>
+  <rect x="68" y="24" width="5" height="50" rx="1" fill="#f5f0e8"/>
+  <rect x="76" y="28" width="30" height="4" rx="2" fill="#f5f0e8" opacity="0.9"/>
+  <line x1="76" y1="36" x2="106" y2="36" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="76" y1="42" x2="98"  y2="42" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="76" y1="48" x2="106" y2="48" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="76" y1="54" x2="106" y2="54" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="76" y1="60" x2="92"  y2="60" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="76" y1="66" x2="106" y2="66" stroke="#cfc8b8" stroke-width="1.2" stroke-linecap="round"/>
+
+  <!-- Flechas bidireccionales -->
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
+      <path d="M1 1L7 4L1 7" fill="none" stroke="#f5f0e8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <line x1="61" y1="36" x2="67" y2="36" stroke="#f5f0e8" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+  <line x1="61" y1="48" x2="67" y2="48" stroke="#f5f0e8" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+  <line x1="61" y1="60" x2="67" y2="60" stroke="#f5f0e8" stroke-width="1.5" marker-end="url(#a)" marker-start="url(#a)"/>
+
+  <!-- Badge verde -->
+  <rect x="24" y="90" width="80" height="28" rx="14" fill="#27ae60"/>
+  <text x="64" y="109" font-family="system-ui,sans-serif" font-size="14" font-weight="700"
+        fill="white" text-anchor="middle">87%</text>
+
+  <!-- Checkmark -->
+  <polyline points="34,85 44,95 74,65"
+            fill="none" stroke="#27ae60" stroke-width="4"
+            stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
