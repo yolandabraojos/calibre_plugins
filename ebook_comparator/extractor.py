@@ -23,6 +23,9 @@ IGNORE_PATTERNS = [
 # Extensiones HTML reconocidas (en minúsculas para comparación case-insensitive)
 _HTML_EXTENSIONS = ('.html', '.xhtml', '.htm')
 
+# Media-types OPF que indican contenido HTML/XHTML (cubre .xml en algunos EPUBs)
+_HTML_MEDIA_TYPES = {'application/xhtml+xml', 'text/html'}
+
 
 def _is_html_file(name):
     """Devuelve True si el nombre de archivo tiene extensión HTML (case-insensitive)."""
@@ -45,6 +48,48 @@ def _is_jacket_by_name(name):
     """
     basename = name.rsplit('/', 1)[-1].lower()
     return basename.startswith('jacket')
+
+
+def _get_manifest_html_items(zf, all_names):
+    """
+    Parsea el OPF y devuelve el conjunto de rutas ZIP que corresponden a
+    ítems de contenido HTML/XHTML según su media-type en el manifiesto.
+
+    Esto permite detectar archivos con extensión .xml que son en realidad
+    documentos XHTML (frecuente en EPUBs generados por ciertas herramientas
+    donde el spine referencia ficheros con extensión .xml pero media-type
+    application/xhtml+xml).
+    """
+    import posixpath
+    opf_name = next((n for n in all_names if n.endswith('.opf')), None)
+    if not opf_name:
+        return set()
+    try:
+        raw  = zf.read(opf_name)
+        root = etree.fromstring(raw)
+        ns   = {'opf': 'http://www.idpf.org/2007/opf'}
+        base = opf_name.rsplit('/', 1)[0] + '/' if '/' in opf_name else ''
+
+        zip_set      = set(all_names)
+        lower_index  = {n.lower(): n for n in all_names}
+
+        html_items = set()
+        for item in root.findall('.//opf:item', ns):
+            media_type = (item.get('media-type') or '').lower().split(';')[0].strip()
+            if media_type not in _HTML_MEDIA_TYPES:
+                continue
+            href = (item.get('href') or '').split('#')[0]
+            if not href:
+                continue
+            candidate = posixpath.normpath(base + href).lstrip('./')
+            if candidate in zip_set:
+                html_items.add(candidate)
+            elif candidate.lower() in lower_index:
+                html_items.add(lower_index[candidate.lower()])
+        return html_items
+    except Exception:
+        logger.debug('Error parseando manifest HTML items', exc_info=True)
+        return set()
 
 
 def _is_jacket_by_content(raw_bytes):
@@ -100,13 +145,22 @@ def extract_epub_chapters(epub_path):
     with zipfile.ZipFile(epub_path, 'r') as zf:
         all_names = zf.namelist()
 
-        # ── Paso 1: separar archivos HTML de sistema (sin leer contenido) ──
-        system_files = [n for n in all_names if _is_html_file(n) and _is_system_file(n)]
+        # ── Paso 1a: detectar ítems HTML/XHTML por manifest OPF ──
+        # Cubre archivos con extensión .xml que el OPF declara como
+        # application/xhtml+xml (frecuente en algunos EPUBs generados por
+        # herramientas propietarias).
+        manifest_html = _get_manifest_html_items(zf, all_names)
+
+        def _is_html_candidate(name):
+            return _is_html_file(name) or name in manifest_html
+
+        # ── Paso 1b: separar archivos HTML de sistema (sin leer contenido) ──
+        system_files = [n for n in all_names if _is_html_candidate(n) and _is_system_file(n)]
         for n in system_files:
             ignored.append({'name': n, 'reason': 'sistema'})
 
         # ── Paso 2: candidatos reales (HTML no-sistema) ──
-        html_candidates = {n for n in all_names if _is_html_file(n) and not _is_system_file(n)}
+        html_candidates = {n for n in all_names if _is_html_candidate(n) and not _is_system_file(n)}
 
         # ── Paso 3: orden canónico (spine OPF) + huérfanos al final ──
         spine_ordered = [n for n in _get_spine_order(zf, all_names) if n in html_candidates]

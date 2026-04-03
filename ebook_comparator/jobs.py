@@ -70,7 +70,12 @@ def _get_format_size(db, book_id, fmt):
 def scan_pairs_sync(db, restrict_to_ids=None):
     """
     Scans the library (or a subset) and returns all pairs of books that
-    share the same (title, authors) and have a supported format (EPUB/AZW3).
+    share the same (title, authors, language) and have a supported format
+    (EPUB/AZW3).
+
+    Including the language in the grouping key prevents false pairs between
+    editions in different languages that happen to share an identical title
+    and author (e.g. translations, bilingual editions).
 
     restrict_to_ids: iterable of book IDs, or None for the whole library.
     """
@@ -106,7 +111,17 @@ def scan_pairs_sync(db, restrict_to_ids=None):
             logger.debug('[SCAN] book %d (%r) skipped: no EPUB/AZW3', book_id, title)
             continue
 
-        key = (title.lower(), authors.lower())
+        try:
+            languages = db.field_for('languages', book_id)
+        except Exception:
+            languages = None
+        if isinstance(languages, (list, tuple)):
+            lang = languages[0] if languages else ''
+        else:
+            lang = languages or ''
+        lang = lang.strip().lower()
+
+        key = (title.lower(), authors.lower(), lang)
         groups.setdefault(key, []).append({
             'id':      book_id,
             'title':   title,
@@ -205,6 +220,86 @@ def _compare_pairs_chunk(result_holder, pairs_chunk, log=None, abort=None, notif
             })
 
     logger.info('[CHUNK] finished. results=%d', len(results))
+    result_holder.append(results)
+
+
+# ---------------------------------------------------------------------------
+# ThreadedJob worker — ultrafast mode (100 % identical pairs only)
+# ---------------------------------------------------------------------------
+
+def _compare_pairs_chunk_ultrafast(result_holder, pairs_chunk, log=None, abort=None, notifications=None):
+    """
+    Variante ultrarrápida de _compare_pairs_chunk.
+
+    Para cada par:
+      1. Extrae los capítulos de ambos libros.
+      2. Llama a compare_books_ultrafast(), que detiene la comparación
+         en cuanto detecta que el resultado será inferior al 100%.
+      3. Solo añade el par a los resultados si la similitud es exactamente 100%.
+      4. Los pares con similitud < 100% se descartan silenciosamente.
+
+    Los errores de extracción también se descartan (no se emite ninguna
+    entrada de error en los resultados) para no contaminar la lista de
+    duplicados exactos.
+    """
+    from .extractor import extract_book_chapters
+    from .comparator import compare_books_ultrafast
+
+    logger.info('[CHUNK-UF] started. pairs=%d holder_id=%d', len(pairs_chunk), id(result_holder))
+    results = []
+    total   = len(pairs_chunk)
+
+    for n, pair in enumerate(pairs_chunk):
+        if abort is not None and abort.is_set():
+            logger.info('[CHUNK-UF] aborted at pair %d', n)
+            if log:
+                log('[CHUNK-UF] Aborted by user.')
+            break
+
+        base_pct = n / max(total, 1)
+        weight   = 1.0 / max(total, 1)
+
+        def _notify(sub_pct, msg):
+            if log:
+                log(msg)
+            if notifications:
+                try:
+                    notifications.put((base_pct + (sub_pct * weight), msg))
+                except Exception:
+                    pass
+
+        try:
+            _notify(0.0, 'Ultrarrápido {}/{}: Extrayendo Libro A (ID {})'.format(
+                n + 1, total, pair['book_a']['id']))
+            chaps_a, ignored_a = extract_book_chapters(pair['book_a']['path'])
+
+            _notify(0.3, 'Ultrarrápido {}/{}: Extrayendo Libro B (ID {})'.format(
+                n + 1, total, pair['book_b']['id']))
+            chaps_b, ignored_b = extract_book_chapters(pair['book_b']['path'])
+
+            _notify(0.6, 'Ultrarrápido {}/{}: Comparando...'.format(n + 1, total))
+
+            cmp = compare_books_ultrafast(chaps_a, chaps_b)
+
+            if cmp is not None:
+                # Similitud exactamente 100 %: incluir en resultados
+                results.append({
+                    'book_a':      pair['book_a'],
+                    'book_b':      pair['book_b'],
+                    'similarity':  cmp['global_similarity'],
+                    'chapter_map': cmp.get('chapter_map', []),
+                    'unique_to_a': cmp.get('unique_to_a', []),
+                    'unique_to_b': cmp.get('unique_to_b', []),
+                    'ignored_a':   ignored_a,
+                    'ignored_b':   ignored_b,
+                })
+            # else: similitud < 100 %, par descartado silenciosamente
+        except Exception:
+            logger.exception('[CHUNK-UF] error comparing %s / %s',
+                             pair['book_a']['path'], pair['book_b']['path'])
+            # En modo ultrarrápido los errores no se reportan como resultados
+
+    logger.info('[CHUNK-UF] finished. results=%d (100%% pairs only)', len(results))
     result_holder.append(results)
 
 

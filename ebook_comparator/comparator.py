@@ -112,6 +112,67 @@ def _length_penalty(text_a, text_b):
 
 # --- FUNCIÓN PRINCIPAL ---
 
+def compare_books_ultrafast(chapters_a, chapters_b):
+    """
+    Modo ultrarrápido: detecta únicamente pares con similitud del 100%.
+
+    Detiene la comparación en cuanto determina que el resultado será
+    inferior al 100% y devuelve None (par descartado silenciosamente).
+    Solo devuelve un dict de resultado cuando los dos libros son idénticos
+    capítulo a capítulo (coincidencia exacta por MD5 para cada capítulo).
+
+    Condiciones de descarte inmediato (early-exit):
+      1. Número de capítulos diferente → los libros no pueden ser idénticos.
+      2. Algún capítulo de A no tiene una pareja exacta (por MD5) en B.
+
+    Retorno:
+      dict  → similitud 100 %, con chapter_map completo.
+      None  → similitud < 100 %, par descartado.
+    """
+    total_a = len(chapters_a)
+    total_b = len(chapters_b)
+
+    # Sin capítulos procesables en ambos libros: no hay nada que comparar
+    if total_a == 0 and total_b == 0:
+        return None
+
+    # Número diferente de capítulos → imposible obtener 100 %
+    if total_a != total_b:
+        return None
+
+    names_b  = list(chapters_b.keys())
+    hashes_b = [get_text_hash(t) for t in chapters_b.values()]
+
+    chapter_map = []
+    matched_b   = set()  # índices de capítulos de B ya emparejados
+
+    for name_a, text_a in chapters_a.items():
+        h_a   = get_text_hash(text_a)
+        found = False
+        for idx, h_b in enumerate(hashes_b):
+            if idx not in matched_b and h_a == h_b:
+                matched_b.add(idx)
+                chapter_map.append({
+                    'chapter_a':    name_a,
+                    'best_match_b': names_b[idx],
+                    'similarity':   100.0,
+                    'is_unique':    False,
+                })
+                found = True
+                break
+        if not found:
+            return None  # early-exit: este capítulo no tiene pareja exacta
+
+    # total_a == total_b y todos los A emparejados → todos los B también emparejados
+    return {
+        'global_similarity': 100.0,
+        'method':            'ultrafast',
+        'chapter_map':       chapter_map,
+        'unique_to_a':       [],
+        'unique_to_b':       [],
+    }
+
+
 def compare_books(chapters_a, chapters_b, method='combined', progress_cb=None):
     total_a = len(chapters_a)
     total_b = len(chapters_b)

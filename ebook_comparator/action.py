@@ -15,7 +15,7 @@ from calibre.gui2.actions import InterfaceAction
 from calibre.gui2.threaded_jobs import ThreadedJob
 
 from .ui import ComparisonDialog, PairReviewDialog
-from .jobs import scan_pairs_sync, _compare_pairs_chunk
+from .jobs import scan_pairs_sync, _compare_pairs_chunk, _compare_pairs_chunk_ultrafast
 
 logger = logging.getLogger('ebook_comparator.action')
 
@@ -24,12 +24,13 @@ CHUNK_SIZE = 20  # Number of pairs to compare in each chunk job
 
 class _AutoSession:
     """All state for one automatic comparison run. Fully isolated."""
-    def __init__(self, db, current_db):
+    def __init__(self, db, current_db, ultrafast=False):
         self.db            = db
         self.current_db    = current_db
         self.chunk_holders = []   # list of lists; each slot filled by one job
         self.lock          = threading.Lock()
         self.pending       = 0
+        self.ultrafast     = ultrafast
 
 
 class EbookComparatorAction(InterfaceAction):
@@ -66,6 +67,16 @@ class EbookComparatorAction(InterfaceAction):
         act_all = QAction('Comparar toda la biblioteca', self.gui)
         act_all.triggered.connect(self.compare_automatic_all)
         menu.addAction(act_all)
+
+        menu.addSeparator()
+
+        act_uf_sel = QAction('Ultrarrápido: solo 100% — seleccionados', self.gui)
+        act_uf_sel.triggered.connect(self.compare_ultrafast_selected)
+        menu.addAction(act_uf_sel)
+
+        act_uf_all = QAction('Ultrarrápido: solo 100% — biblioteca completa', self.gui)
+        act_uf_all.triggered.connect(self.compare_ultrafast_all)
+        menu.addAction(act_uf_all)
 
         self.qaction.triggered.connect(self.compare_manual)
 
@@ -112,10 +123,35 @@ class EbookComparatorAction(InterfaceAction):
         self._launch(db, current_db, restrict_to_ids=None)
 
     # ------------------------------------------------------------------
+    # Ultra-fast mode: selected books (100 % identical pairs only)
+    # ------------------------------------------------------------------
+
+    def compare_ultrafast_selected(self):
+        rows = self.gui.library_view.selectionModel().selectedRows()
+        if len(rows) < 2:
+            error_dialog(self.gui, 'Selección incorrecta',
+                         'Selecciona al menos 2 libros para la comparación ultrarrápida.',
+                         show=True)
+            return
+        selected_ids = [self.gui.library_view.model().id(r) for r in rows]
+        current_db   = self.gui.current_db
+        db           = current_db.new_api if hasattr(current_db, 'new_api') else current_db
+        self._launch(db, current_db, restrict_to_ids=selected_ids, ultrafast=True)
+
+    # ------------------------------------------------------------------
+    # Ultra-fast mode: whole library (100 % identical pairs only)
+    # ------------------------------------------------------------------
+
+    def compare_ultrafast_all(self):
+        current_db = self.gui.current_db
+        db         = current_db.new_api if hasattr(current_db, 'new_api') else current_db
+        self._launch(db, current_db, restrict_to_ids=None, ultrafast=True)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _launch(self, db, current_db, restrict_to_ids):
+    def _launch(self, db, current_db, restrict_to_ids, ultrafast=False):
         scope = ('{} libros seleccionados'.format(len(restrict_to_ids))
                  if restrict_to_ids is not None else 'biblioteca completa')
         logger.info('[AUTO] _launch: %s', scope)
@@ -156,7 +192,7 @@ class EbookComparatorAction(InterfaceAction):
             'Encontrados {} pares. Lanzando {} lotes...'.format(
                 total, len(chunks)), 5000)
 
-        session = _AutoSession(db, current_db)
+        session = _AutoSession(db, current_db, ultrafast=ultrafast)
         # Pre-allocate one slot per chunk so results can be accumulated safely
         # even if jobs complete out of order.
         session.chunk_holders = [[] for _ in chunks]
@@ -165,9 +201,13 @@ class EbookComparatorAction(InterfaceAction):
 
         logger.info('[AUTO] launching %d chunk jobs', len(chunks))
 
+        chunk_func = _compare_pairs_chunk_ultrafast if ultrafast else _compare_pairs_chunk
+        mode_label = 'Ultrarrápido' if ultrafast else 'Comparando'
+
         submitted = 0
         for idx, (chunk, holder) in enumerate(zip(chunks, session.chunk_holders)):
-            label = 'Comparando pares {}-{} de {}'.format(
+            label = '{} pares {}-{} de {}'.format(
+                mode_label,
                 idx * CHUNK_SIZE + 1,
                 min((idx + 1) * CHUNK_SIZE, total),
                 total)
@@ -175,7 +215,7 @@ class EbookComparatorAction(InterfaceAction):
                 job = ThreadedJob(
                     'ebook_comparator_compare',
                     label,
-                    _compare_pairs_chunk,
+                    chunk_func,
                     (holder, chunk),
                     {},
                     # Capture idx and session by value via default args
@@ -245,8 +285,13 @@ class EbookComparatorAction(InterfaceAction):
             with session.lock:
                 pending = session.pending
             if pending == 0:
-                error_dialog(self.gui, 'Sin resultados',
-                             'No se pudo comparar ningún par de libros.', show=True)
+                if session.ultrafast:
+                    msg = ('No se encontró ningún par de libros con similitud del 100 %.\n\n'
+                           'El modo ultrarrápido solo muestra libros idénticos '
+                           'capítulo a capítulo.')
+                else:
+                    msg = 'No se pudo comparar ningún par de libros.'
+                error_dialog(self.gui, 'Sin resultados', msg, show=True)
             return
 
         try:

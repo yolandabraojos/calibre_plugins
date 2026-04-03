@@ -5,7 +5,7 @@ REM This script creates a ZIP file ready for installation in Calibre
 setlocal enabledelayedexpansion
 
 set PLUGIN_NAME=ebook_comparator
-set PLUGIN_VERSION=2.3.2
+set PLUGIN_VERSION=2.4.0
 set BUILD_DIR=%~dp0..
 set OUTPUT_DIR=%BUILD_DIR%\..\..\.build
 
