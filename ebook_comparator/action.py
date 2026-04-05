@@ -49,6 +49,11 @@ class EbookComparatorAction(InterfaceAction):
         self._review_dialog = None
         # Track deleted book IDs across dialog sessions
         self._deleted_book_ids = set()
+        # Last accumulated results + db refs for "Reabrir última revisión"
+        self._last_results     = None
+        self._last_db          = None
+        self._last_current_db  = None
+        self._act_reopen       = None
 
     def genesis(self):
         self.results_ready.connect(self._on_results_ready)
@@ -77,6 +82,14 @@ class EbookComparatorAction(InterfaceAction):
         act_uf_all = QAction('Ultrarrápido: solo 100% — biblioteca completa', self.gui)
         act_uf_all.triggered.connect(self.compare_ultrafast_all)
         menu.addAction(act_uf_all)
+
+        menu.addSeparator()
+
+        act_reopen = QAction('Reabrir última revisión', self.gui)
+        act_reopen.triggered.connect(self.reopen_last_review)
+        act_reopen.setEnabled(False)
+        menu.addAction(act_reopen)
+        self._act_reopen = act_reopen
 
         self.qaction.triggered.connect(self.compare_manual)
 
@@ -148,6 +161,45 @@ class EbookComparatorAction(InterfaceAction):
         self._launch(db, current_db, restrict_to_ids=None, ultrafast=True)
 
     # ------------------------------------------------------------------
+    # Reopen last review
+    # ------------------------------------------------------------------
+
+    def reopen_last_review(self):
+        if not self._last_results:
+            error_dialog(self.gui, 'Sin resultados guardados',
+                         'No hay resultados de comparación disponibles.\n'
+                         'Lanza primero una comparación automática.',
+                         show=True)
+            return
+
+        # If the dialog is already visible just bring it to front.
+        if self._review_dialog is not None:
+            try:
+                if self._review_dialog.isVisible():
+                    self._review_dialog.raise_()
+                    self._review_dialog.activateWindow()
+                    return
+            except Exception:
+                pass
+
+        try:
+            dlg = PairReviewDialog(
+                self.gui,
+                self._last_db,
+                self._last_results,
+                current_db=self._last_current_db,
+                deleted_book_ids=self._deleted_book_ids,
+            )
+            self._review_dialog = dlg
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+        except Exception:
+            logger.error('[AUTO] error reopening dialog:\n%s', traceback.format_exc())
+            error_dialog(self.gui, 'Error al reabrir',
+                         traceback.format_exc(), show=True)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -164,6 +216,13 @@ class EbookComparatorAction(InterfaceAction):
             except Exception:
                 pass
             self._review_dialog = None
+
+        # Clear saved results from previous run
+        self._last_results = None
+        self._last_db = None
+        self._last_current_db = None
+        if self._act_reopen is not None:
+            self._act_reopen.setEnabled(False)
 
         try:
             pairs = scan_pairs_sync(db, restrict_to_ids=restrict_to_ids)
@@ -293,6 +352,13 @@ class EbookComparatorAction(InterfaceAction):
                     msg = 'No se pudo comparar ningún par de libros.'
                 error_dialog(self.gui, 'Sin resultados', msg, show=True)
             return
+
+        # Persist results so the user can reopen the dialog after closing it.
+        self._last_results    = list(results)
+        self._last_db         = session.db
+        self._last_current_db = session.current_db
+        if self._act_reopen is not None:
+            self._act_reopen.setEnabled(True)
 
         try:
             if self._review_dialog is None or not self._review_dialog.isVisible():

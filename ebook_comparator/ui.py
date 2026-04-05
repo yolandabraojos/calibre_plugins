@@ -3,6 +3,7 @@ from __future__ import unicode_literals, division, absolute_import, print_functi
 
 import logging
 import os
+from collections import defaultdict
 from functools import partial
 
 from PyQt5.Qt import (
@@ -10,8 +11,7 @@ from PyQt5.Qt import (
     QProgressBar, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QColor, Qt, QFrame, QSizePolicy
 )
-from calibre.gui2 import error_dialog
-from calibre.gui2.dialogs.confirm_delete import confirm
+from calibre.gui2 import error_dialog, question_dialog
 
 from .jobs import ComparisonWorker
 
@@ -77,7 +77,11 @@ class PairReviewDialog(QDialog):
         # para poder mostrarlos en la confirmación aunque el par ya no esté en
         # self.results (por ejemplo si fue filtrado por un borrado anterior).
         self._marked_books_info = {}   # {book_id: {'title':..,'format':..,'id':..}}
+        # Pair keys already processed by _auto_mark_100pct_pairs to avoid
+        # re-marking when add_results() is called with accumulated results.
+        self._auto_considered_pair_keys = set()
         self._setup_ui()
+        self._auto_mark_100pct_pairs()
         self._load_pair()
 
     # ------------------------------------------------------------------
@@ -112,8 +116,15 @@ class PairReviewDialog(QDialog):
                     len(new_pairs), len(self.results) + len(new_pairs))
 
         self.results.extend(new_pairs)
+        self._auto_mark_100pct_pairs()
         # Refresh navigation labels (total count changes) without moving index.
         self._refresh_nav()
+        # Refresh delete buttons for the currently displayed pair in case one of
+        # the new auto-marks affects it.
+        if self.results:
+            idx = max(0, min(self.index, len(self.results) - 1))
+            pair = self.results[idx]
+            self._refresh_delete_btns(pair['book_a']['id'], pair['book_b']['id'])
 
     @staticmethod
     def _pair_key(result):
@@ -121,6 +132,109 @@ class PairReviewDialog(QDialog):
         a = result.get('book_a', {})
         b = result.get('book_b', {})
         return (a.get('id'), b.get('id'))
+
+    # ------------------------------------------------------------------
+    # Auto-marking of 100 % identical pairs
+    # ------------------------------------------------------------------
+
+    def _auto_mark_100pct_pairs(self):
+        """
+        For every pair with exactly 100 % similarity that has not been
+        processed yet, automatically mark one of the two books for deletion:
+
+        - EPUB vs AZW3  → mark the AZW3.
+        - Same format   → mark the larger file (by size).
+
+        Safety guarantee: at least one book per (title, authors) group is
+        always left unmarked, even if that means overriding the rule above.
+        The book kept alive is the one with the best "quality" score
+        (EPUB preferred over AZW3, then smallest file size).
+        """
+        # ── Step 1: collect candidate marks from new 100 % pairs ──────────
+        # Maps book_id → book-info dict for books we want to mark.
+        candidate_marks = {}
+
+        for pair in self.results:
+            key = self._pair_key(pair)
+            if key in self._auto_considered_pair_keys:
+                continue
+            self._auto_considered_pair_keys.add(key)
+
+            if pair.get('similarity', -1.0) < 100.0:
+                continue
+
+            a = pair['book_a']
+            b = pair['book_b']
+            fmt_a = a.get('format', '').upper()
+            fmt_b = b.get('format', '').upper()
+
+            if fmt_a != fmt_b:
+                # Mixed formats: always prefer EPUB → mark the AZW3
+                to_mark = a if fmt_a == 'AZW3' else b
+            else:
+                # Same format: mark the smaller file (keep the larger)
+                to_mark = a if a.get('size', 0) <= b.get('size', 0) else b
+
+            if to_mark['id'] not in self.ids_deleted:
+                candidate_marks[to_mark['id']] = to_mark
+
+        if not candidate_marks:
+            return
+
+        # ── Step 2: build group map (title + authors) ─────────────────────
+        groups = defaultdict(set)   # group_key → set of all book_ids
+        all_books = {}              # book_id   → book-info dict
+
+        for pair in self.results:
+            a = pair['book_a']
+            b = pair['book_b']
+            group_key = (a.get('title', '').lower(), a.get('authors', '').lower())
+            groups[group_key].add(a['id'])
+            groups[group_key].add(b['id'])
+            all_books[a['id']] = a
+            all_books[b['id']] = b
+
+        # ── Step 3: safety check — at least one book per group survives ───
+        for group_key, book_ids in groups.items():
+            already_marked = book_ids & set(self.ids_to_delete)
+            new_candidates = book_ids & set(candidate_marks.keys())
+            would_be_marked = already_marked | new_candidates
+            surviving = book_ids - would_be_marked - self.ids_deleted
+
+            if surviving:
+                continue  # At least one book will remain unmarked
+
+            # All books in this group would be deleted — un-mark the best one.
+            # "Best": EPUB over AZW3, then smallest size.
+            all_to_consider = would_be_marked - self.ids_deleted
+            if not all_to_consider:
+                continue
+
+            def _quality(bid):
+                bk = all_books.get(bid, {})
+                fmt_score = 0 if bk.get('format', '').upper() == 'EPUB' else 1
+                return (fmt_score, bk.get('size', 0))
+
+            best_bid = min(all_to_consider, key=_quality)
+            if best_bid in candidate_marks:
+                del candidate_marks[best_bid]
+            elif best_bid in self.ids_to_delete:
+                self.ids_to_delete.remove(best_bid)
+                self._marked_books_info.pop(best_bid, None)
+            logger.info('[AUTO-MARK] Preserving book id=%s (group safety: %r)',
+                        best_bid, group_key)
+
+        # ── Step 4: apply remaining candidate marks ────────────────────────
+        for book_id, book_info in candidate_marks.items():
+            if book_id not in self.ids_to_delete:
+                self.ids_to_delete.append(book_id)
+                self._marked_books_info[book_id] = {
+                    'id':     book_id,
+                    'title':  book_info.get('title', '?'),
+                    'format': book_info.get('format', '?'),
+                }
+                logger.info('[AUTO-MARK] Marked book id=%s (%s) at 100 %% similarity',
+                            book_id, book_info.get('format', '?'))
 
     # ------------------------------------------------------------------
     # UI construction
@@ -466,20 +580,20 @@ class PairReviewDialog(QDialog):
         # Construir lista de títulos desde _marked_books_info, que se actualiza
         # en el momento del marcado y no depende de que el par siga en self.results.
         title_lines = [
-            '· {} (ID {}, {})'.format(
+            '{} (ID {}, {})'.format(
                 info['title'], info['id'], info['format'])
             for book_id in self.ids_to_delete
             for info in [self._marked_books_info.get(book_id, {'title': '?', 'id': book_id, 'format': '?'})]
         ]
-        titles_html = '<br>'.join(title_lines) if title_lines else ''
 
         count = len(self.ids_to_delete)
-        msg = ('<p>Vas a borrar definitivamente {} libro{}:</p>'
-               '<p style="margin-left:12px">{}</p>'
+        msg = ('<p>Vas a borrar definitivamente <b>{} libro{}</b>.</p>'
+               '<p>Despliega los detalles para ver la lista completa.</p>'
                '<p><b>Esta acción no se puede deshacer.</b></p>').format(
-            count, 's' if count > 1 else '', titles_html)
+            count, 's' if count > 1 else '')
+        det_msg = '\n'.join(title_lines)
 
-        if not confirm(msg, 'ebook_comparator_delete_pending', self):
+        if not question_dialog(self, 'Confirmar borrado', msg, det_msg=det_msg):
             return False
 
         try:
@@ -528,7 +642,9 @@ class PairReviewDialog(QDialog):
     def accept(self):
         """Handle dialog close: offer to delete marked books before closing."""
         if self.ids_to_delete:
-            self._perform_pending_deletions()
+            deleted = self._perform_pending_deletions()
+            if not deleted:
+                return  # User cancelled or error — keep dialog open
         super().accept()
 
 
