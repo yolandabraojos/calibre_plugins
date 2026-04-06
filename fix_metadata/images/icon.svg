@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1A5276"/>
+      <stop offset="100%" style="stop-color:#0E2A46"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F5B041"/>
+      <stop offset="100%" style="stop-color:#CA6F1E"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect x="1" y="1" width="62" height="62" rx="10" ry="10" fill="url(#bg)"/>
+
+  <!-- Document / page (left side) -->
+  <polygon points="8,6 34,6 40,12 40,57 8,57" fill="#ECF0F1"/>
+  <!-- Folded corner -->
+  <polygon points="34,6 40,12 34,12" fill="#BDC3C7"/>
+
+  <!-- Metadata lines -->
+  <rect x="12" y="18" width="23" height="2.5" rx="1.2" fill="#7F8C8D"/>
+  <rect x="12" y="24" width="19" height="2.5" rx="1.2" fill="#95A5A6"/>
+  <rect x="12" y="30" width="21" height="2.5" rx="1.2" fill="#95A5A6"/>
+  <rect x="12" y="36" width="15" height="2.5" rx="1.2" fill="#BDC3C7"/>
+  <rect x="12" y="42" width="18" height="2.5" rx="1.2" fill="#BDC3C7"/>
+
+  <!-- Wrench: open-end spanner, tilted 45°, positioned bottom-right -->
+  <!--
+    Draw a flat wrench lying along the diagonal (top-left head to bottom-right handle tip).
+    Coordinates before rotation, centered at (44,44):
+      Handle: a thick bar
+      Two "jaw" prongs at the head end forming a U-shape opening
+  -->
+  <g transform="translate(44,44) rotate(45)">
+    <!-- Handle bar -->
+    <rect x="-3.5" y="-1" width="19" height="7" rx="3.5" fill="url(#gold)"/>
+    <!-- Head (left side of wrench before rotation) -->
+    <!-- Outer jaw top -->
+    <rect x="-18" y="-9" width="7" height="5.5" rx="2" fill="url(#gold)"/>
+    <!-- Outer jaw bottom -->
+    <rect x="-18" y="3.5" width="7" height="5.5" rx="2" fill="url(#gold)"/>
+    <!-- Back plate connecting jaws -->
+    <rect x="-18" y="-9" width="4" height="18" rx="2" fill="url(#gold)"/>
+    <!-- Round end cap on handle -->
+    <circle cx="15" cy="2.5" r="3.5" fill="url(#gold)"/>
+  </g>
+</svg>
