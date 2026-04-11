@@ -5,7 +5,7 @@ REM This script creates a ZIP file ready for installation in Calibre
 setlocal enabledelayedexpansion
 
 set PLUGIN_NAME=book_classifier
-set PLUGIN_VERSION=1.2.1
+set PLUGIN_VERSION=1.3.0
 set BUILD_DIR=%~dp0..
 set OUTPUT_DIR=%BUILD_DIR%\..\..\.build
 

@@ -24,6 +24,7 @@ except ImportError:
 try:
     from calibre_plugins.fix_metadata.fix_title import clean_title
     from calibre_plugins.fix_metadata.fix_author import fix_author
+    from calibre_plugins.fix_metadata.fix_identifiers import fix_identifiers
 except Exception as e:
     logger.error(f"Error importing fix modules: {e}")
 
@@ -87,6 +88,17 @@ class FixMetadataAction(InterfaceAction):
         ac = author_menu.addAction('Entire library')
         ac.setToolTip('Fix author names for every book in the library')
         ac.triggered.connect(lambda: self.fix_authors(scope='all'))
+
+        # ---- Fix identifiers submenu ----
+        ids_menu = self.menu.addMenu('Fix identifiers  (amazon, isbn, UUIDs)')
+        ac = ids_menu.addAction('Selected books')
+        ac.setToolTip('Normalise identifiers: merge asin/mobi-asin into amazon, '
+                      'remove UUIDs, fix key==value entries, merge regional amazon codes')
+        ac.triggered.connect(lambda: self.fix_identifiers_action(scope='selected'))
+
+        ac = ids_menu.addAction('Entire library')
+        ac.setToolTip('Normalise identifiers for every book in the library')
+        ac.triggered.connect(lambda: self.fix_identifiers_action(scope='all'))
 
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
@@ -285,5 +297,55 @@ class FixMetadataAction(InterfaceAction):
             details += f'{unchanged_books} book(s) had no author changes.\n'
 
         info_dialog(self.gui, 'Fix Author Names',
+                    f'{changed_books} book(s) updated, {unchanged_books} unchanged.',
+                    det_msg=details, show=True)
+
+    # ------------------------------------------------------------------ #
+    #  Action: Fix identifiers                                             #
+    # ------------------------------------------------------------------ #
+
+    def fix_identifiers_action(self, scope='selected'):
+        logger.info(f"Action triggered: Fix identifiers ({scope})")
+
+        book_ids = self._get_book_ids(scope)
+        if book_ids is None:
+            return
+
+        db              = self.gui.current_db
+        changed_books   = 0
+        unchanged_books = 0
+        all_changes     = []
+
+        for book_id in book_ids:
+            mi   = db.get_metadata(book_id, index_is_id=True)
+            orig = dict(mi.identifiers or {})
+
+            new_ids, changes = fix_identifiers(orig)
+
+            if changes:
+                mi.identifiers = new_ids
+                db.set_metadata(book_id, mi, commit=False)
+                changed_books += 1
+                all_changes.append((mi.title, changes))
+            else:
+                unchanged_books += 1
+
+        db.commit()
+
+        if changed_books:
+            self.gui.library_view.model().refresh_ids(book_ids)
+            self.gui.status_bar.show_message(
+                f'Identifiers fixed: {changed_books} book(s) updated', 3000)
+
+        details = ''
+        for title, changes in all_changes:
+            details += f'"{title}":\n'
+            for c in changes:
+                details += f'  • {c}\n'
+            details += '\n'
+        if unchanged_books:
+            details += f'{unchanged_books} book(s) needed no changes.\n'
+
+        info_dialog(self.gui, 'Fix Identifiers',
                     f'{changed_books} book(s) updated, {unchanged_books} unchanged.',
                     det_msg=details, show=True)

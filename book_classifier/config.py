@@ -16,44 +16,60 @@ from calibre.utils.config import JSONConfig
 DEFAULT_RULES = {
     "categories": [
         {
-            "name": "Romance Regencia",
+            "name": "Regencia Inglesa",
             "require_all": False,
             "min_keywords_match": 1,
-            "keywords": ["regencia", "regency", "romance", "ton", "temporada social"],
-            "exclude_keywords": ["paranormal", "ciencia ficcion"],
-            "priority": 10
-        },
-        {
-            "name": "Romance Histórico",
-            "require_all": False,
-            "min_keywords_match": 1,
-            "keywords": ["historico", "historical", "romance", "victoriana", "tudor", "medieval"],
+            "keywords": ["regencia", "regency", "ton", "la temporada", "temporada social", "prince regent"],
             "exclude_keywords": [],
-            "priority": 8
+            "priority": 95
         },
         {
-            "name": "Fantasía Épica",
+            "name": "Fantasía",
             "require_all": False,
-            "min_keywords_match": 2,
-            "keywords": ["fantasia", "fantasy", "épico", "dragon", "magia", "quest"],
-            "exclude_keywords": ["romance"],
-            "priority": 9
+            "min_keywords_match": 1,
+            "keywords": ["fantasia", "fantasy", "dragon", "magia", "mago", "hechicero", "elfo", "epic fantasy"],
+            "exclude_keywords": [],
+            "priority": 50
         },
         {
             "name": "Ciencia Ficción",
             "require_all": False,
             "min_keywords_match": 1,
-            "keywords": ["ciencia ficcion", "science fiction", "sci-fi", "espacio", "futuro", "robot"],
+            "keywords": ["ciencia ficcion", "science fiction", "sci-fi", "alien", "space opera", "cyberpunk", "robot"],
             "exclude_keywords": [],
-            "priority": 9
+            "priority": 54
         },
         {
-            "name": "Thriller",
-            "require_all": True,
+            "name": "Misterio y Crimen",
+            "require_all": False,
             "min_keywords_match": 1,
-            "keywords": ["thriller", "suspense"],
+            "keywords": ["mystery", "misterio", "detective", "crimen", "crime", "asesinato", "murder"],
             "exclude_keywords": [],
-            "priority": 7
+            "priority": 50
+        },
+        {
+            "name": "Thriller / Suspense",
+            "require_all": False,
+            "min_keywords_match": 1,
+            "keywords": ["thriller", "suspense", "espionaje", "conspiracy", "agente secreto"],
+            "exclude_keywords": [],
+            "priority": 48
+        },
+        {
+            "name": "Romance",
+            "require_all": False,
+            "min_keywords_match": 1,
+            "keywords": ["romance", "amor", "love story", "enemies to lovers", "slow burn", "hea"],
+            "exclude_keywords": [],
+            "priority": 46
+        },
+        {
+            "name": "Terror / Horror",
+            "require_all": False,
+            "min_keywords_match": 1,
+            "keywords": ["horror", "terror", "haunted house", "ghost story", "fantasma", "slasher"],
+            "exclude_keywords": [],
+            "priority": 50
         }
     ],
     "options": {

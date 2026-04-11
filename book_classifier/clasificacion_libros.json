@@ -1,245 +1,552 @@
 {
   "categories": [
     {
-      "name": "Epoca Regencia Inglesa",
-      "keywords": ["regencia", "regency", "ton", "temporada social", "la temporada", "guerras napoleónicas", "almack's"],
-      "exclude_keywords": [],
-      "priority": 1,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Epoca Victoriana Inglesa",
-      "keywords": ["victoriana", "victoriano", "victorian", "época victoriana"],
-      "exclude_keywords": [],
-      "priority": 1,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Epoca Medieval",
-      "keywords": ["medieval", "sajón", "normando", "vikingo", "vicking", "edad media", "castillo", "caballero"],
-      "exclude_keywords": [],
-      "priority": 1,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Highlander",
-      "keywords": ["laird", "clan", "Highlander", "Escocia", "escocesa", "escoces", "tierras altas"],
-      "exclude_keywords": [],
-      "priority": 1,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Zombis",
-      "keywords": ["zombi", "zombie", "muertos vivientes", "apocalipsis zombi", "undead", "walking dead"],
-      "exclude_keywords": [],
-      "priority": 3,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-	{
-      "name": "Academia Mágica",
+      "name": "Regencia Inglesa",
       "keywords": [
-        "academia mágica", "magic academy", "escuela de magia", "magic school", 
-        "internado mágico", "boarding school", "clases de magia", "hechicería", 
-        "estudiante de magia", "magical institute", "scholomance", "universidad de magia"
+        "regencia", "regency", "ton", "la temporada", "temporada social",
+        "temporada en Londres", "guerras napoleonicas", "almack's",
+        "sociedad de la regencia", "prince regent", "principe regente"
       ],
       "exclude_keywords": [],
-      "priority": 3,
+      "priority": 95,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
-      "name": "Why-Choose / Harem Inverso",
-      "keywords": ["why-choose", "why choose", "reverse harem", "harem inverso", "rh romance", "menage a trois", "ménage", "polyamory"],
+      "name": "Época Victoriana",
+      "keywords": [
+        "victoriana", "victoriano", "victorian", "era victoriana",
+        "epoca victoriana", "era del vapor", "reina victoria", "queen victoria",
+        "whitechapel", "scotland yard", "sociedad victoriana"
+      ],
       "exclude_keywords": [],
-      "priority": 3,
+      "priority": 90,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Steampunk",
+      "keywords": [
+        "steampunk", "steam punk", "retrofuturista", "maquinas de vapor",
+        "engranajes", "aether", "automata victoriano", "dirigible",
+        "airship", "clockpunk", "dieselpunk"
+      ],
+      "exclude_keywords": [],
+      "priority": 89,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Época Tudor / Isabelina",
+      "keywords": [
+        "tudor", "isabelino", "elizabethan", "enrique viii", "henry viii",
+        "ana bolena", "anne boleyn", "reina isabel", "queen elizabeth",
+        "corte tudor", "renaissance england", "plantagenet"
+      ],
+      "exclude_keywords": [],
+      "priority": 88,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Vikingos",
+      "keywords": [
+        "vikingo", "viking", "norseman", "norse", "valhalla", "odin",
+        "thor", "longship", "drakar", "escandinavia", "escandinavo",
+        "norsemen", "berserker", "raid vikingo", "norse mythology"
+      ],
+      "exclude_keywords": [],
+      "priority": 87,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Highlander / Escocia",
+      "keywords": [
+        "laird", "clan", "highlander", "escocia", "escocesa", "escoces",
+        "tierras altas", "highlands", "kilt", "castillo escoces",
+        "scots", "scottish highlands", "islas escocesas"
+      ],
+      "exclude_keywords": [],
+      "priority": 87,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Época Napoleónica",
+      "keywords": [
+        "napoleonico", "napoleon", "guerras napoleonicas", "napoleonic wars",
+        "waterloo", "trafalgar", "hussar", "husares", "regimiento",
+        "peninsular war", "guerra de la independencia", "empire francais"
+      ],
+      "exclude_keywords": [],
+      "priority": 86,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Antigüedad Clásica",
+      "keywords": [
+        "roma antigua", "ancient rome", "grecia antigua", "ancient greece",
+        "egipto antiguo", "ancient egypt", "gladiador", "gladiator",
+        "legionario", "roman legion", "senado romano", "faraon", "pharaoh",
+        "olimpo", "olympus", "cesar", "cleopatra", "sparta", "esparta",
+        "persia antigua", "babilonia", "mesopotamia"
+      ],
+      "exclude_keywords": [],
+      "priority": 85,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Época Medieval",
+      "keywords": [
+        "medieval", "edad media", "caballero", "knight", "cruzadas",
+        "crusades", "feudal", "senor feudal", "plaga negra", "black plague",
+        "normando", "saxones", "sajones", "caballero andante",
+        "torneo medieval", "siglo xii", "siglo xiii", "siglo xiv", "siglo xv"
+      ],
+      "exclude_keywords": [],
+      "priority": 85,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Salvaje Oeste / Western",
+      "keywords": [
+        "western", "salvaje oeste", "wild west", "vaquero", "cowboy",
+        "sheriff", "rancho", "ranch", "frontier", "frontera americana",
+        "saloon", "pistolero", "outlaw", "bandido", "texas ranger",
+        "gold rush", "fiebre del oro", "far west"
+      ],
+      "exclude_keywords": [],
+      "priority": 83,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Piratas",
+      "keywords": [
+        "pirata", "pirate", "corsario", "buccaneer", "bucanero",
+        "mar caribe", "caribbean sea", "golden age of piracy",
+        "tesoro pirata", "pirate treasure", "capitan pirata", "barco pirata"
+      ],
+      "exclude_keywords": [],
+      "priority": 82,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Academia Mágica",
+      "keywords": [
+        "academia magica", "magic academy", "escuela de magia",
+        "magic school", "internado magico", "clases de magia",
+        "estudiante de magia", "magical institute", "scholomance",
+        "universidad de magia", "magic university", "magical boarding school"
+      ],
+      "exclude_keywords": [],
+      "priority": 80,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Fae / Hadas",
+      "keywords": [
+        "fae", "faerie", "fairy", "hada", "hadas", "corte de las hadas",
+        "seelie", "unseelie", "fey", "sidhe", "titania", "oberon",
+        "glamour magico", "tierra de las hadas", "fairyland",
+        "faerie court", "the fair folk"
+      ],
+      "exclude_keywords": [],
+      "priority": 78,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
       "name": "Vampiros",
-      "keywords": ["vampiro", "vampira", "vampire", "dracula", "nosferatu", "colmillos", "bebedor de sangre"],
+      "keywords": [
+        "vampiro", "vampira", "vampire", "vampirico", "dracula", "nosferatu",
+        "colmillos", "bebedor de sangre", "sangre inmortal",
+        "criatura de la noche", "no muerto", "casa vampirica",
+        "clan de vampiros", "vampire coven"
+      ],
       "exclude_keywords": [],
-      "priority": 3,
+      "priority": 78,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
       "name": "Hombres Lobo / Cambiaformas",
-      "keywords": ["hombre lobo", "werewolf", "shifter", "cambiaformas", "licántropo", "lycan", "luna llena", "manada", "pack", "alpha", "alfa"],
+      "keywords": [
+        "hombre lobo", "werewolf", "shifter", "cambiaformas", "licantropo",
+        "lycan", "manada", "pack", "alpha wolf", "luna llena",
+        "transformacion lobuna", "bear shifter", "dragon shifter",
+        "cat shifter", "animal shifter", "wolf pack"
+      ],
       "exclude_keywords": [],
-      "priority": 3,
+      "priority": 78,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
-      "name": "Clásicos",
-      "keywords": ["clásico", "classic", "literatura universal", "obra maestra", "siglo de oro", "canon literario", "antología clásica"],
-      "exclude_keywords": ["moderno", "contemporáneo", "new adult"],
-      "priority": 5,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Erótica",
-      "keywords": ["erótica", "erótico", "erotica", "erotic", "adult content", "steamy", "smut", "explicit", "sexo", "bdsm", "kink", "dark romance", "taboo romance"],
-      "exclude_keywords": ["juvenil", "young adult", "ya", "infantil"],
-      "priority": 5,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "LGTB",
-      "keywords": ["lgtb", "lgtbiq", "mm", "ff", "m/m", "f/f", "male-male", "female-female", "homosexual", "gay", "lesbian", "lesbiana", "bisexual", "transgender", "queer", "bl", "boys love", "sapphic", "sáfico"],
+      "name": "Ángeles y Demonios",
+      "keywords": [
+        "angel", "arcangel", "archangel", "demonio", "demon", "caido",
+        "fallen angel", "nephilim", "inframundo", "underworld",
+        "cielo e infierno", "heaven and hell", "lucifer", "serafin",
+        "seraph", "exorcismo", "exorcism", "pacto diabolico"
+      ],
       "exclude_keywords": [],
-      "priority": 5,
+      "priority": 76,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Zombis",
+      "keywords": [
+        "zombi", "zombie", "muertos vivientes", "apocalipsis zombi",
+        "zombie apocalypse", "undead horde", "walking dead",
+        "infectados", "virus zombie", "zombie outbreak"
+      ],
+      "exclude_keywords": [],
+      "priority": 75,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
       "name": "Fantasía Urbana",
-      "keywords": ["urban fantasy", "fantasía urbana", "paranormal urban fantasy", "detective sobrenatural", "contemporary fantasy"],
+      "keywords": [
+        "urban fantasy", "fantasia urbana", "paranormal urban",
+        "detective sobrenatural", "contemporary fantasy",
+        "cazador de demonios", "demon hunter", "mundo oculto",
+        "mundo magico moderno", "shadow world", "cazadora de sombras"
+      ],
       "exclude_keywords": [],
-      "priority": 5,
+      "priority": 72,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
-      "name": "Distopía",
-      "keywords": ["distopía", "dystopian", "post-apocalíptico", "post-apocalyptic", "fin del mundo", "sociedad futurista", "gobierno opresor", "supervivencia extrema", "colapso", "plaga"],
+      "name": "LitRPG / GameLit / Isekai",
+      "keywords": [
+        "litrpg", "gamelit", "game lit", "system fantasy", "dungeon core",
+        "isekai", "rpg world", "level up", "dungeon crawl",
+        "mmorpg", "atrapado en el juego", "trapped in game",
+        "skill tree", "status window", "reencarnacion en otro mundo"
+      ],
       "exclude_keywords": [],
-      "priority": 7,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Chick Lit",
-      "keywords": ["chick lit", "ficción femenina", "women's fiction", "comedia romántica", "rom-com", "vida moderna", "urban lifestyle", "amistad femenina", "sisterhood"],
-      "exclude_keywords": ["histórico", "medieval"],
-      "priority": 8,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Realismo Mágico",
-      "keywords": ["realismo mágico", "magical realism", "cotidiano y fantástico", "realismo fantástico", "macondo", "fábula moderna"],
-      "exclude_keywords": ["dragon", "espada", "alien"],
-      "priority": 8,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Acción y Aventura",
-      "keywords": ["acción", "adventure", "aventura", "espionaje", "spy", "thriller de acción", "supervivencia", "survival", "misión", "mercenario", "treasure hunt", "búsqueda del tesoro"],
-      "exclude_keywords": [],
-      "priority": 10,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Histórico",
-      "keywords": ["histórico", "historical", "lady", "lord", "duque", "conde", "earl", "tudor", "siglo [0-9XMD]+", "biographical fiction", "sagas"],
-      "exclude_keywords": [],
-      "priority": 10,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Romance",
-      "keywords": ["romance", "amor", "love", "conquista su corazon", "casarse", "matrimonio", "romántico", "relación", "pareja", "enamorarse", "hea", "hfn", "enemies to lovers", "fake dating", "slow burn", "love triangle"],
-      "exclude_keywords": [],
-      "priority": 10,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Fantasía",
-      "keywords": ["fantasía", "fantasy", "épico", "dragon", "magia", "quest", "mágico", "sobrenatural", "hechizo", "brujería", "mago", "brujo", "dioses", "dios", "god"],
-      "exclude_keywords": ["romance"],
-      "priority": 10,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Ciencia Ficción",
-      "keywords": ["sci-fi", "science fiction", "ciencia ficción", "inteligencia artificial", "artificial intelligence", "alien", "espacial", "futurista", "cyberpunk", "space opera", "time travel"],
-      "exclude_keywords": [],
-      "priority": 10,
-      "min_keywords_match": 1,
-      "require_all": false
-    },
-    {
-      "name": "Misterio y Crimen",
-      "keywords": ["mystery", "misterio", "detective", "crimen", "crime", "investigación", "thriller", "suspense", "cozy mystery", "asesinato", "murder"],
-      "exclude_keywords": [],
-      "priority": 10,
+      "priority": 70,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
       "name": "Dark Romance",
-      "keywords": ["dark romance", "dark-romance", "romance oscuro", "bully romance", "stalker romance", "villain romance", "anti-hero romance", "morally grey", "corrupting"],
+      "keywords": [
+        "dark romance", "romance oscuro", "bully romance", "stalker romance",
+        "villain romance", "anti-hero romance", "morally grey",
+        "dark hero", "captor romance", "taboo romance",
+        "forbidden dark", "omegaverse", "dark erotica", "mafia dark"
+      ],
       "exclude_keywords": [],
-      "priority": 4,
+      "priority": 68,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
       "name": "Gothic Romance",
-      "keywords": ["gothic romance", "romance gótico", "romantic gothic"],
+      "keywords": [
+        "gothic romance", "romance gotico", "romantic gothic",
+        "mansion oscura", "dark mansion", "dark castle",
+        "atmosfera gotica", "edwardian gothic", "victorian gothic",
+        "misteriosa mansion"
+      ],
       "exclude_keywords": [],
-      "priority": 4,
+      "priority": 66,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
-      "name": "Terror",
-      "keywords": ["horror", "terror", "miedo", "gothic", "gótico", "ghost", "fantasma", "ocultismo", "supernatural", "psicológico"],
-      "exclude_keywords": ["romance", "romántico", "love story"],
-      "priority": 10,
+      "name": "Why-Choose / Harem Inverso",
+      "keywords": [
+        "why-choose", "why choose", "reverse harem", "harem inverso",
+        "rh romance", "menage", "polyamory", "polyamorous",
+        "poliamoroso", "multiple love interests", "amor multiple"
+      ],
+      "exclude_keywords": [],
+      "priority": 65,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
-      "name": "Biografía",
-      "keywords": ["biography", "autobiography", "biografía", "autobiografía", "memoir", "memorias", "diario", "diaries", "life story"],
+      "name": "Mafia / Crimen Organizado Romance",
+      "keywords": [
+        "mafia romance", "romance mafioso", "mob boss",
+        "crime boss", "organized crime romance",
+        "italian mafia", "russian mafia", "mafia italiana", "bratva",
+        "cartel romance"
+      ],
       "exclude_keywords": [],
-      "priority": 10,
+      "priority": 63,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
-      "name": "No Ficción",
-      "keywords": ["non-fiction", "no ficción", "true crime", "self-help", "ensayo", "historia", "divulgación científica", "recetas", "manual", "guía"],
+      "name": "Erótica",
+      "keywords": [
+        "erotica", "erotic", "erotico", "adult content", "steamy",
+        "smut", "explicit", "bdsm", "kink", "explicit romance",
+        "erotic fiction", "18+", "adults only"
+      ],
+      "exclude_keywords": ["juvenil", "young adult", "ya", "infantil", "kids"],
+      "priority": 60,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Chick Lit / Com. Romántica",
+      "keywords": [
+        "chick lit", "ficcion femenina", "women's fiction",
+        "comedia romantica", "rom-com", "romantic comedy",
+        "vida moderna", "amistad femenina", "sisterhood",
+        "humor romantico", "contemporary chick lit"
+      ],
+      "exclude_keywords": ["historico", "medieval", "fantasia"],
+      "priority": 58,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "LGTB+",
+      "keywords": [
+        "lgtb", "lgbtq", "lgtbiq", "mm romance", "ff romance",
+        "m/m", "f/f", "male-male", "female-female", "homosexual",
+        "gay romance", "lesbian romance", "lesbiana", "bisexual",
+        "transgender", "queer", "boys love", "sapphic", "safico",
+        "bl novel", "nonbinary romance"
+      ],
       "exclude_keywords": [],
-      "priority": 10,
+      "priority": 55,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Distopía",
+      "keywords": [
+        "distopia", "dystopian", "dystopia", "post-apocaliptico",
+        "post-apocalyptic", "sociedad opresiva", "gobierno totalitario",
+        "regimen totalitario", "colapso civilizacion", "nuevo orden mundial",
+        "rebelion contra el sistema", "survivalist", "resistance movement"
+      ],
+      "exclude_keywords": [],
+      "priority": 54,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Ciencia Ficción",
+      "keywords": [
+        "ciencia ficcion", "science fiction", "sci-fi", "scifi",
+        "inteligencia artificial", "artificial intelligence",
+        "alien", "extraterrestre", "space opera", "nave espacial",
+        "spaceship", "futurista", "cyberpunk", "viaje en el tiempo",
+        "time travel", "colonizacion espacial", "terraforming",
+        "biopunk", "singularity", "robot"
+      ],
+      "exclude_keywords": [],
+      "priority": 54,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Realismo Mágico",
+      "keywords": [
+        "realismo magico", "magical realism", "realismo fantastico",
+        "macondo", "fabula moderna", "surrealism literario",
+        "lo cotidiano y lo fantastico", "realidad y fantasia"
+      ],
+      "exclude_keywords": [],
+      "priority": 52,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Fantasía",
+      "keywords": [
+        "fantasia", "fantasy", "dragon", "magia", "mago", "brujo",
+        "hechicero", "brujeria", "hechizo", "elfo", "orco", "enano",
+        "quest fantastico", "mundo magico", "portal fantasy",
+        "epic fantasy", "high fantasy", "low fantasy",
+        "sword and sorcery", "espada y brujeria"
+      ],
+      "exclude_keywords": [],
+      "priority": 50,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Misterio y Crimen",
+      "keywords": [
+        "mystery", "misterio", "detective", "investigacion policial",
+        "crimen", "crime", "cozy mystery", "asesinato", "murder",
+        "whodunit", "police procedural", "noir", "forense", "forensic",
+        "inspector", "investigador privado", "private investigator",
+        "cold case", "caso sin resolver"
+      ],
+      "exclude_keywords": [],
+      "priority": 50,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Terror / Horror",
+      "keywords": [
+        "horror", "terror", "horror psicologico", "haunted house",
+        "casa encantada", "ghost story", "fantasma", "ocultismo",
+        "creepy", "escalofriante", "monster", "monstruo",
+        "psico horror", "slasher", "cosmic horror", "lovecraftiano",
+        "folk horror", "body horror"
+      ],
+      "exclude_keywords": ["gothic romance", "romance gotico"],
+      "priority": 50,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Thriller / Suspense",
+      "keywords": [
+        "thriller", "suspense", "psychological thriller",
+        "thriller psicologico", "espionaje", "spy thriller",
+        "political thriller", "thriller politico", "legal thriller",
+        "medical thriller", "agente secreto", "secret agent",
+        "conspiracion", "conspiracy"
+      ],
+      "exclude_keywords": [],
+      "priority": 48,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Romance",
+      "keywords": [
+        "romance", "amor", "love story", "enamorarse",
+        "conquista su corazon", "matrimonio feliz", "boda", "wedding",
+        "enemies to lovers", "friends to lovers", "fake dating",
+        "forced proximity", "slow burn", "love triangle",
+        "second chance romance", "hea", "hfn",
+        "happily ever after", "contemporary romance"
+      ],
+      "exclude_keywords": [],
+      "priority": 46,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Acción y Aventura",
+      "keywords": [
+        "accion", "adventure", "aventura", "expedicion", "expedition",
+        "supervivencia", "survival", "mision peligrosa", "mercenario",
+        "mercenary", "treasure hunt", "busqueda del tesoro",
+        "heist", "robo espectacular", "operacion encubierta",
+        "action adventure"
+      ],
+      "exclude_keywords": [],
+      "priority": 44,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Histórico",
+      "keywords": [
+        "historico", "historical", "ficcion historica", "historical fiction",
+        "~siglo\\s+xvi", "~siglo\\s+xvii", "~siglo\\s+xviii",
+        "~siglo\\s+xix", "~siglo\\s+xx",
+        "nineteenth century", "eighteenth century", "seventeenth century",
+        "period drama", "ambientado en el pasado"
+      ],
+      "exclude_keywords": [],
+      "priority": 42,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Clásicos",
+      "keywords": [
+        "clasico", "classic literature", "obra maestra",
+        "literatura universal", "siglo de oro", "canon literario",
+        "great classics", "penguin classics", "oxford classics",
+        "obra clasica", "literatura clasica"
+      ],
+      "exclude_keywords": ["moderno", "contemporaneo", "new adult"],
+      "priority": 40,
       "min_keywords_match": 1,
       "require_all": false
     },
     {
       "name": "Infantil",
-      "keywords": ["children", "infantil", "niños", "picture book", "middle grade", "kids", "literatura infantil"],
+      "keywords": [
+        "children", "infantil", "ninos", "picture book",
+        "middle grade", "kids book", "literatura infantil",
+        "cuento infantil", "album ilustrado", "early reader",
+        "libros para ninos"
+      ],
       "exclude_keywords": [],
-      "priority": 10,
+      "priority": 38,
       "min_keywords_match": 1,
       "require_all": false
-    }, 
+    },
     {
-      "name": "Juvenil",
-      "keywords": ["young adult", "ya", "joven adulto", "juvenil", "coming of age", "adolescente", "teen", "teenager", "new adult"],
+      "name": "Juvenil / Young Adult",
+      "keywords": [
+        "young adult", "ya fiction", "joven adulto", "juvenil",
+        "coming of age", "adolescente", "teen fiction", "teenager",
+        "high school romance", "secondary school"
+      ],
       "exclude_keywords": [],
-      "priority": 10,
+      "priority": 36,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "New Adult",
+      "keywords": [
+        "new adult", "na romance", "college romance", "campus romance",
+        "primer amor adulto", "adulto joven", "dormitory romance",
+        "fraternity romance", "university romance"
+      ],
+      "exclude_keywords": [],
+      "priority": 34,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "Biografía / Memorias",
+      "keywords": [
+        "biography", "autobiography", "biografia", "autobiografia",
+        "memoir", "memorias", "diario", "diaries", "life story",
+        "true story", "basada en hechos reales", "based on true events"
+      ],
+      "exclude_keywords": [],
+      "priority": 30,
+      "min_keywords_match": 1,
+      "require_all": false
+    },
+    {
+      "name": "No Ficción",
+      "keywords": [
+        "non-fiction", "no ficcion", "true crime", "self-help",
+        "autoayuda", "ensayo", "divulgacion cientifica",
+        "libro de recetas", "manual", "guia practica", "how-to",
+        "business book", "negocios", "historia real", "reportaje"
+      ],
+      "exclude_keywords": [],
+      "priority": 25,
       "min_keywords_match": 1,
       "require_all": false
     }
   ],
-    "options": {
-        "case_sensitive": false,
-        "whole_word": true,
-        "allow_multiple": false
-    }
+  "options": {
+    "case_sensitive": false,
+    "whole_word": true,
+    "allow_multiple": true
+  }
 }

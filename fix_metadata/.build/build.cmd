@@ -4,7 +4,7 @@ REM Build script for Fix Metadata plugin
 setlocal enabledelayedexpansion
 
 set PLUGIN_NAME=fix_metadata
-set PLUGIN_VERSION=1.0.0
+set PLUGIN_VERSION=1.1.0
 set BUILD_DIR=%~dp0..
 set OUTPUT_DIR=%BUILD_DIR%\..\..\.build
 

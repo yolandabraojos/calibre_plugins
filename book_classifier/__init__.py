@@ -11,7 +11,7 @@ class BookClassifierPlugin(InterfaceActionBase):
     description             = 'Clasifica libros automáticamente basándose en título, subtítulo, comentarios y tags'
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Yolanda Braojos'
-    version                 = (1, 2, 1)
+    version                 = (1, 3, 0)
     minimum_calibre_version = (5, 0, 0)
 
     actual_plugin = 'calibre_plugins.book_classifier.action:BookClassifierAction'

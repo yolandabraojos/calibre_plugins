@@ -16,7 +16,7 @@ class ActionFixMetadata(InterfaceActionBase):
                                 'series prefixes from titles and normalises author names')
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Yolanda Braojos'
-    version                 = (1, 0, 0)
+    version                 = (1, 1, 0)
     minimum_calibre_version = (2, 0, 0)
 
     actual_plugin = 'calibre_plugins.fix_metadata.action:FixMetadataAction'
