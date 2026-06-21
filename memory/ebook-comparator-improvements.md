@@ -8,7 +8,7 @@ metadata:
 
 El plugin `ebook_comparator` esta en **v2.6.2** (en el repo local tras la migracion
 de 2026-06-21; OneDrive tenia 2.6.0/2.6.2 en iteracion). Su ZIP maestro es
-`EbookComparator.zip` en la raiz del repo; instalar siempre desde un ZIP que el
+`dist/EbookComparator.zip`; instalar siempre desde un ZIP que el
 verificador marque INTEGRO — ver [[cloud-sync-write-corruption]].
 
 Mejoras para acelerar/afinar la deteccion de libros iguales:

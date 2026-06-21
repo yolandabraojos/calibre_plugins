@@ -8,15 +8,17 @@ Multiplataforma (solo necesita Python 3). Para CADA carpeta que sea un plugin
   1. Lee `name` y `version` de su __init__.py.
   2. Empaqueta sus ficheros en la RAIZ de un ZIP (como exige Calibre),
      EXCLUYENDO __pycache__, *.pyc, .build/, *.bak* y basura del SO.
-  3. Escribe el ZIP maestro en la raiz del repo  ->  <NombrePlugin>.zip
-     y una copia versionada en  dist/<NombrePlugin>-vX.Y.Z.zip
+  3. Escribe en dist/:  el maestro  dist/<NombrePlugin>.zip  (para instalar)
+     y una copia versionada  dist/<NombrePlugin>-vX.Y.Z.zip
   4. Verifica el ZIP recien creado: sin bytes nulos en ficheros de texto,
      compila los .py, JSON valido y el propio ZIP integro.
+
+La RAIZ del repo queda solo con las fuentes; todos los artefactos van a dist/.
 
 Uso:
     python build_plugins.py            # construye y verifica todos
     python build_plugins.py book_classifier ebook_comparator   # solo esos
-    python build_plugins.py --verify   # NO construye, solo verifica los ZIP
+    python build_plugins.py --verify   # NO construye, solo verifica dist/*.zip
 
 Codigo de salida 0 si TODO queda integro, 1 si hay algun problema.
 """
@@ -94,9 +96,9 @@ def included_files(plugin_dir):
 def build_zip(plugin_dir):
     name, version = read_meta(plugin_dir)
     base = zip_basename(name)
-    master = os.path.join(BASE, base + '.zip')
     os.makedirs(DIST, exist_ok=True)
-    versioned = os.path.join(DIST, '{}-v{}.zip'.format(base, version))
+    master = os.path.join(DIST, base + '.zip')                       # maestro a instalar
+    versioned = os.path.join(DIST, '{}-v{}.zip'.format(base, version))  # copia versionada
 
     files = list(included_files(plugin_dir))
     for target in (master, versioned):
@@ -107,7 +109,7 @@ def build_zip(plugin_dir):
         if os.path.exists(target):
             os.remove(target)
         os.replace(tmp, target)
-    log('  [BUILD] {} v{}  ->  {}.zip  ({} ficheros)'.format(
+    log('  [BUILD] {} v{}  ->  dist/{}.zip  ({} ficheros)'.format(
         name, version, base, len(files)))
     return master
 
@@ -115,7 +117,7 @@ def build_zip(plugin_dir):
 def verify_zip(zip_path):
     """True si el ZIP es integro."""
     ok = True
-    label = os.path.basename(zip_path)
+    label = 'dist/' + os.path.basename(zip_path)
     try:
         with zipfile.ZipFile(zip_path) as z:
             if z.testzip() is not None:
@@ -181,18 +183,21 @@ def main(argv):
 
     ok = True
     if not verify_only:
-        log('=== GENERANDO ZIPS ===')
+        log('=== GENERANDO ZIPS (dist/) ===')
         zips = [build_zip(p) for p in plugins]
     else:
         zips = []
         for p in plugins:
             name, _ = read_meta(p)
-            z = os.path.join(BASE, zip_basename(name) + '.zip')
+            z = os.path.join(DIST, zip_basename(name) + '.zip')
             if os.path.exists(z):
                 zips.append(z)
+        if not zips:
+            log('No hay ZIP maestros en dist/. Ejecuta primero sin --verify.')
+            return 1
 
     log('')
-    log('=== VERIFICANDO ZIPS ===')
+    log('=== VERIFICANDO ZIPS (dist/) ===')
     for z in zips:
         if not verify_zip(z):
             ok = False

@@ -3,14 +3,14 @@
 Verificador de integridad de los plugins de Calibre del proyecto.
 
 Comprueba, para CADA plugin, que sus ficheros .py no tienen bytes nulos
-(corrupción típica de OneDrive), que compilan, y que sus JSON son válidos.
+(corrupción típica de la sincronización en la nube / montaje), que compilan,
+y que sus JSON son válidos.
 
 Auto-descubre los plugins: cualquier subcarpeta que contenga un fichero marcador
-`plugin-import-name-*.txt` (el que usa Calibre) se trata como plugin. Cubre así
-book_classifier, extract_metadata y fix_metadata sin tener nada cableado.
+`plugin-import-name-*.txt` (el que usa Calibre) se trata como plugin.
 
-También verifica cualquier *.zip de la raíz que sea un plugin (contenga el
-marcador), descomprimiéndolo en un temporal y revisando su contenido.
+También verifica los *.zip de plugin que haya en `dist/` (los genera
+build_plugins.py), descomprimiéndolos en un temporal y revisando su contenido.
 
 Uso:  python verificar_plugin.py
 """
@@ -22,6 +22,7 @@ import py_compile
 import tempfile
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+DIST = os.path.join(BASE, 'dist')
 
 ok = True
 
@@ -42,7 +43,6 @@ def check_py(path, label):
     if nulls:
         print('  [CORRUPTO] {}: {} bytes nulos'.format(label, nulls)); ok = False; return
     try:
-        # Compilar a un .pyc temporal para no ensuciar la carpeta (OneDrive).
         tmp_pyc = os.path.join(tempfile.gettempdir(), 'verif_tmp.pyc')
         py_compile.compile(path, cfile=tmp_pyc, doraise=True)
         print('  [OK] {}'.format(label))
@@ -65,7 +65,6 @@ def check_json(path, label):
 
 
 def is_plugin_dir(path):
-    """Una carpeta es un plugin si contiene un marcador plugin-import-name-*.txt."""
     if not os.path.isdir(path):
         return False
     for name in os.listdir(path):
@@ -75,7 +74,6 @@ def is_plugin_dir(path):
 
 
 def check_dir(plugin_dir):
-    """Verifica todos los .py y .json de una carpeta de plugin."""
     py_files = sorted(f for f in os.listdir(plugin_dir) if f.endswith('.py'))
     json_files = sorted(f for f in os.listdir(plugin_dir) if f.endswith('.json'))
     if not py_files and not json_files:
@@ -88,7 +86,6 @@ def check_dir(plugin_dir):
 
 
 def zip_is_plugin(zip_path):
-    """True si el zip contiene un marcador plugin-import-name-*.txt."""
     try:
         with zipfile.ZipFile(zip_path) as z:
             for n in z.namelist():
@@ -101,7 +98,6 @@ def zip_is_plugin(zip_path):
 
 
 def check_zip(zip_path):
-    """Verifica integridad del zip y de los .py / .json que contiene."""
     global ok
     try:
         with zipfile.ZipFile(zip_path) as z:
@@ -140,17 +136,19 @@ if plugin_dirs:
 else:
     print('  (no se encontró ninguna carpeta de plugin)')
 
-print('\n=== ZIPS DE PLUGIN ===')
-zips = sorted(
-    f for f in os.listdir(BASE)
-    if f.lower().endswith('.zip') and zip_is_plugin(os.path.join(BASE, f))
-)
+print('\n=== ZIPS DE PLUGIN (dist/) ===')
+zips = []
+if os.path.isdir(DIST):
+    zips = sorted(
+        f for f in os.listdir(DIST)
+        if f.lower().endswith('.zip') and zip_is_plugin(os.path.join(DIST, f))
+    )
 if zips:
     for f in zips:
-        print('\n-- {} --'.format(f))
-        check_zip(os.path.join(BASE, f))
+        print('\n-- dist/{} --'.format(f))
+        check_zip(os.path.join(DIST, f))
 else:
-    print('  (no se encontró ningún zip de plugin)')
+    print('  (no se encontró ningún zip de plugin en dist/; ejecuta build_plugins.py)')
 
 print()
 print('RESULTADO:',

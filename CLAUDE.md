@@ -6,13 +6,13 @@ la corrupcion por sincronizacion en la nube).
 
 ## Plugins (cada carpeta con `plugin-import-name-*.txt` es un plugin)
 
-| Carpeta              | Nombre Calibre       | Version | ZIP maestro            |
-|----------------------|----------------------|---------|------------------------|
-| book_classifier      | Book Classifier      | 3.0.0   | BookClassifier.zip     |
-| ebook_comparator     | Ebook Comparator     | 2.6.2   | EbookComparator.zip    |
-| fix_metadata         | Fix Metadata         | 1.3.3   | FixMetadata.zip        |
-| extract_metadata     | Extract Metadata     | 1.3.2   | ExtractMetadata.zip    |
-| all_libraries_stats  | All Libraries Stats  | 1.0.5   | AllLibrariesStats.zip  |
+| Carpeta              | Nombre Calibre       | Version | ZIP maestro (en dist/)      |
+|----------------------|----------------------|---------|-----------------------------|
+| book_classifier      | Book Classifier      | 3.0.0   | dist/BookClassifier.zip     |
+| ebook_comparator     | Ebook Comparator     | 2.6.2   | dist/EbookComparator.zip    |
+| fix_metadata         | Fix Metadata         | 1.3.3   | dist/FixMetadata.zip        |
+| extract_metadata     | Extract Metadata     | 1.3.2   | dist/ExtractMetadata.zip    |
+| all_libraries_stats  | All Libraries Stats  | 1.0.5   | dist/AllLibrariesStats.zip  |
 
 La version es la fuente de verdad en el `__init__.py` de cada plugin
 (`version = (X, Y, Z)`). El generador lee de ahi nombre y version.
@@ -33,12 +33,19 @@ Para ficheros de codigo o texto:
 El ZIP del entregable es la copia maestra fiable (los binarios no se corrompen):
 instala/comparte siempre desde un ZIP que el verificador marque ÍNTEGRO.
 
+## Estructura
+
+- La **raiz** contiene solo las fuentes (carpetas de plugin) y las herramientas
+  (`build_plugins.py`, `verificar_plugin.py`, `build.cmd`, `verify.cmd`, `CLAUDE.md`).
+- Todos los **artefactos** (ZIP) se generan en `dist/` y estan en `.gitignore`
+  (no se versionan).
+
 ## Generar los ZIP
 
 ```
 python build_plugins.py            # construye + verifica TODOS los plugins
 python build_plugins.py fix_metadata   # solo uno
-python build_plugins.py --verify   # solo verifica los ZIP existentes
+python build_plugins.py --verify   # solo verifica los ZIP de dist/
 ```
 En Windows: doble clic en `build.cmd` (todos) o `verify.cmd` (solo verificar).
 
@@ -47,13 +54,13 @@ El generador:
 - Empaqueta los ficheros en la RAIZ del ZIP (como exige Calibre).
 - **Excluye** `__pycache__/`, `*.pyc`, `.build/`, `*.bak*` y basura del SO.
   Incluir `__pycache__`/`.pyc` rompe la carga del plugin en Calibre en silencio.
-- Escribe el maestro en la raiz (`<NombrePlugin>.zip`) y una copia versionada
-  en `dist/<NombrePlugin>-vX.Y.Z.zip`.
+- Escribe en `dist/`: el maestro `dist/<NombrePlugin>.zip` (para instalar) y una
+  copia versionada `dist/<NombrePlugin>-vX.Y.Z.zip`.
 - Verifica cada ZIP: sin bytes nulos en texto, los `.py` compilan, JSON valido.
 
 ## Verificacion
 
-- `verificar_plugin.py` revisa las carpetas de plugin Y los ZIP de la raiz.
+- `verificar_plugin.py` revisa las carpetas de plugin Y los ZIP de `dist/`.
 - `build_plugins.py` verifica los ZIP recien generados.
 - Un cambio se da por bueno solo si el resultado es **ÍNTEGRO**.
 
@@ -62,8 +69,8 @@ El generador:
 1. Editar las fuentes del plugin con **bash** (nunca Write/Edit).
 2. Subir la version en `__init__.py` si procede.
 3. `python build_plugins.py <plugin>` y confirmar ÍNTEGRO.
-4. Instalar en Calibre desde el ZIP maestro de la raiz.
-5. `git add/commit` cuando este validado.
+4. Instalar en Calibre desde `dist/<NombrePlugin>.zip`.
+5. `git add/commit` cuando este validado (los ZIP de dist/ no se versionan).
 
 ## Notas
 
