@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Calibre Book Classifier Plugin
-Clasifica libros automáticamente usando metadatos y un JSON de reglas.
+Calibre Book Classifier Plugin (IA local)
+Clasifica libros con un modelo entrenado: sugiere librería y añade tags de tema.
 """
 
 from calibre.customize import InterfaceActionBase
 
+
 class BookClassifierPlugin(InterfaceActionBase):
     name                    = 'Book Classifier'
-    description             = 'Clasifica libros automáticamente basándose en título, subtítulo, comentarios y tags'
+    description             = 'Clasifica libros con un modelo de IA local: sugiere librería y añade tags de tema (tono/tropos)'
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Yolanda Braojos'
-    version                 = (1, 2, 1)
+    version                 = (3, 0, 0)
     minimum_calibre_version = (5, 0, 0)
 
     actual_plugin = 'calibre_plugins.book_classifier.action:BookClassifierAction'

@@ -1,0 +1,12 @@
+# ZIP maestros generados (se construyen con build_plugins.py)
+/*.zip
+dist/
+
+# Artefactos de Python
+__pycache__/
+*.py[cod]
+
+# Basura del SO
+.DS_Store
+Thumbs.db
+desktop.ini

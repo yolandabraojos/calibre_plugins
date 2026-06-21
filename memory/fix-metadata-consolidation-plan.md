@@ -1,0 +1,35 @@
+---
+name: fix-metadata-consolidation-plan
+description: Plan acordado para mejorar los plugins de Calibre extract_metadata/fix_metadata
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 67487480-0d89-47c7-9e82-ea362fc73fef
+---
+
+Proyecto "Calibre - Clasificacion": mejora de plugins de metadata. Decisiones acordadas con Yolanda (2026-06-13):
+
+- **Fusionar**: extract_metadata se retira y su funcionalidad se absorbe en fix_metadata (que ya la duplica). Un solo plugin a futuro.
+- **Universo** (#world): HALLAZGO (jun 2026) tras analizar los 160 #world de L*.csv: el universo NO aparece en títulos ni en tags (0/160), así que NO es detectable desde título/subjects. Es el PADRE que agrupa varias series (ej. "The Cosmere" → Elantris + The Mistborn Saga + The Stormlight Archive + Mistborn: Wax & Wayne; "Hunter Legends" → Chronicles of Nick + Hunter Legends). Para poblarlo automáticamente haría falta un diccionario serie→universo (curado). series_index nunca está vacío (calibre pone 1.0). Las filas "sin número" = series vacía + #world (antologías/omnibus/colecciones/rangos: "A Touch of Dead", "Harper Connelly Mysteries Quartet", "Dragon's Fire - Blood Prophecy 1-5"). DECIDIDO (jun 2026): SOLO diccionario serie→universo (la detección de colecciones se descartó por demasiado amplia). El mapeo se amplía editando un JSON o se marca #world a mano. Semilla derivada de sus datos: The Cosmere←{Elantris, The Mistborn Saga, The Stormlight Archive, Mistborn: Wax & Wayne}; Hunter Legends←{Chronicles of Nick, Hunter Legends}; Otherworld←{Otherworld / Sisters of the Moon}; Sookie Stackhouse←{Sookie Stackhouse}; Warhammer←{Darkblade}. Implementación: world_map.json (formato universo→[series]) + fix_world.py (lookup case-insensitive) + tests.
+- Notas de edición "(Spanish Edition)/(English Edition)" y códigos "(spa)/(eng)" se eliminan del título en make_clean_title (HECHO, con tests).
+- Autor dentro del título (HECHO): make_clean_title quita autor como sufijo "Título - Autor", "Título by Autor" y "(Autor)", ANCLADO a coincidencia exacta con author/author_sort (incluye forma "Apellido, Nombre"→"Nombre Apellido"); no toca títulos donde el nombre no es el autor. Patrón F2 en find_series: "Autor - Serie N Título" sin guion (ej. "Karen Hawkins - MacLean 1 How to Abduct a Highland Lord" → serie MacLean #1), con guard que rechaza series que son solo artículos (evita "Autor - The 39 Steps" → "The"). 88 tests verdes.
+- Patrón R (HECHO): "Título - Book N in/of [the] Serie [Series]" (también ': ' y '(...)'); ej. "Coveted - Book 3 in the Gwen Sparks Series" → Gwen Sparks #3, título "Coveted". Guard: si tras in/of viene "a/an" es descriptor de género (ej. "Book 3 of a LitRPG adventure") y se rechaza. Detecta 106/111 casos reales (95%). 94 tests verdes.
+- Separación serie/subtítulo en 2 vueltas (HECHO, por petición de Yolanda: "se mezclan" por el ':'): menú "Fix title" reemplazado por "Fix series" y "Fix subtitle"; diálogos distintos (SeriesReviewDialog 6 cols sin subtítulo; SubtitleReviewDialog 3 cols). fix_series_action limpia título+serie+idioma (subtitle=None, no toca subtítulo). fix_subtitle_action MUEVE "Main: Subtitle" → título "Main" + #subtitle="Subtitle" (requiere columna #subtitle, no sobreescribe). Independientes (no se consultan entre sí). action.py compila, 94 tests verdes.
+- Afinado con correcciones reales de Yolanda sobre QRevisar (xlsx en uploads): SERIE rechaza ahora índice >=1000 (año, p.ej. box sets Harlequin "2018", "NIMWAY HALL 1794"), contenedores (Boxed Set/Bundle/Omnibus/Pack), basura sin >=2 letras ("#","c.","mobi v."), y descriptores de género ("A ... romance/adventure"); K acepta "#" dentro del paréntesis ("(Frost Series #8)"→Frost). Resultado: 17/22 de sus "No" corregidos, 0 regresiones en los "Sí". SUBTÍTULO: ahora CEDE ante la serie (si find_series detecta serie, no propone subtítulo) → 394→347 propuestas, 47 serie-solapa saltadas. NOTA: esto invierte la decisión previa "independientes"; los tipos género (los acepta) y limpio (mixto) se dejan al diálogo. 101 tests verdes.
+- FixMetadata.zip regenerado y verificado ÍNTEGRO (incluye fix_world.py + world_map.json + acción Fix universe + Fix series/subtitle separadas).
+- GOTCHA: open(path,"w",newline=valor_invalido) TRUNCA el fichero antes de fallar -> dejó test_fix_metadata.py a 0 bytes una vez. Al escribir ficheros, no pasar newline inválido; reconstruido por heredoc bash.
+- **Series**: solo extraer del título de cada libro (NO canonizar variantes ya existentes en la biblioteca).
+
+Columnas personalizadas reales en Calibre: #world (universo), #subtitle (subtítulo), #title_opf (título ORIGINAL pre-limpieza), #generator, #book_producer, #subjects. Yolanda exporta las bibliotecas (CSV) con estos campos + título para refinar la detección de series.
+
+Plan por fases: 0) red de tests + verificador (HECHO), 1) consolidar en fix_metadata y borrar código muerto (fix_title_series.py no se usa; clean_titles() no está cableado), 2) robustez del extractor (usar parsers nativos de calibre opf2.OPF/epub.get_metadata en vez de regex; escritura en bloque con new_api.set_field; #subjects respetar tipo de columna), 3) detección de universo, 4) endurecer fix_author (sufijos, partículas, varios autores) y subtítulos, 5) empaquetado+verificación.
+
+Fase 0 entregada: tests en `tests/test_fix_metadata.py` (50 tests, 48 OK + 2 expectedFailure que documentan bugs); `verificar_plugin.py` reescrito para auto-descubrir todos los plugins por su marcador plugin-import-name-*.txt y sus ZIP.
+
+Refinamiento detección de serie desde título (HECHO, sobre fix_title.py): patrones nuevos M ([Serie N] - Título / •), N (Título: [A] Serie [Novel,] Book N), O (Serie N: Título), P (Serie #N - Título), Q (Serie Book N - Título); normalización de coletillas (_normalize_series_name) que quita Series/Novel/Novella/Shorts/Trilogy/Duet (NO chronicle/saga/cycle: integrales; mantiene "The"); make_clean_title tolerante a descriptores y a "(Spanish Edition)" final. Medido sobre L*.csv: detección de serie 46%→60%, limpieza de título 56%, falsos positivos 2.1%. Techo recuperable ~78% (el resto tiene la serie ausente del título: traducciones, subtítulos de género, series de 1 libro). 65 tests verdes (tests/test_fix_metadata.py). La inconsistencia del prefijo "The" en las etiquetas manuales es irrecuperable → diálogo de revisión.
+
+GOTCHA de edición: en el scratch (outputs/work) la herramienta Edit/Write y bash quedaron DESINCRONIZADOS (bash veía una versión truncada). Para editar ficheros que luego se prueban por bash, escribir SIEMPRE con bash (heredoc/script python), no con Edit/Write. Ver [[cloud-sync-write-corruption]].
+
+Bugs conocidos pendientes (en tests como expectedFailure): (1) fix_author con sufijo "King, Stephen Jr." → "Stephen Jr. King" (debería "Stephen King Jr."); (2) fix_identifiers clave urn 'urnisbn' con valor 'urn:isbn:NNN' no limpia el prefijo.
+
+Nota: en el sandbox la carpeta book_classifier/ aparece cloud-only (ls da tamaños pero open falla); no es corrupción. El verificador debe correrse en local. Ver [[cloud-sync-write-corruption]].

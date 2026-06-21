@@ -3,6 +3,7 @@ from __future__ import unicode_literals, division, absolute_import, print_functi
 
 import logging
 import os
+from collections import defaultdict
 from functools import partial
 
 from PyQt5.Qt import (
@@ -10,8 +11,7 @@ from PyQt5.Qt import (
     QProgressBar, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QColor, Qt, QFrame, QSizePolicy
 )
-from calibre.gui2 import error_dialog
-from calibre.gui2.dialogs.confirm_delete import confirm
+from calibre.gui2 import error_dialog, question_dialog
 
 from .jobs import ComparisonWorker
 
@@ -38,6 +38,29 @@ def _pct_color(pct):
     if pct >= 40:
         return '#e67e22'
     return '#c0392b'
+
+
+def _open_in_editor(gui, book_id, fmt, path=None):
+    """
+    Abre un libro en el EDITOR de libros de calibre (Tweak ePub / "Editar
+    libro").  Si por cualquier motivo no se puede, intenta abrirlo con la
+    aplicación por defecto del sistema operativo.  Devuelve True si tuvo éxito.
+    """
+    if book_id is not None and fmt:
+        try:
+            gui.iactions['Tweak ePub'].ebook_edit_format(book_id, fmt)
+            return True
+        except Exception:
+            logger.exception('No se pudo abrir en el editor de calibre (id=%s fmt=%s)',
+                             book_id, fmt)
+    if path:
+        try:
+            from calibre.gui2 import open_local_file
+            open_local_file(path)
+            return True
+        except Exception:
+            logger.exception('No se pudo abrir el fichero localmente: %s', path)
+    return False
 
 
 # ===========================================================================
@@ -77,7 +100,11 @@ class PairReviewDialog(QDialog):
         # para poder mostrarlos en la confirmación aunque el par ya no esté en
         # self.results (por ejemplo si fue filtrado por un borrado anterior).
         self._marked_books_info = {}   # {book_id: {'title':..,'format':..,'id':..}}
+        # Pair keys already processed by _auto_mark_100pct_pairs to avoid
+        # re-marking when add_results() is called with accumulated results.
+        self._auto_considered_pair_keys = set()
         self._setup_ui()
+        self._auto_mark_100pct_pairs()
         self._load_pair()
 
     # ------------------------------------------------------------------
@@ -112,8 +139,15 @@ class PairReviewDialog(QDialog):
                     len(new_pairs), len(self.results) + len(new_pairs))
 
         self.results.extend(new_pairs)
+        self._auto_mark_100pct_pairs()
         # Refresh navigation labels (total count changes) without moving index.
         self._refresh_nav()
+        # Refresh delete buttons for the currently displayed pair in case one of
+        # the new auto-marks affects it.
+        if self.results:
+            idx = max(0, min(self.index, len(self.results) - 1))
+            pair = self.results[idx]
+            self._refresh_delete_btns(pair['book_a']['id'], pair['book_b']['id'])
 
     @staticmethod
     def _pair_key(result):
@@ -121,6 +155,109 @@ class PairReviewDialog(QDialog):
         a = result.get('book_a', {})
         b = result.get('book_b', {})
         return (a.get('id'), b.get('id'))
+
+    # ------------------------------------------------------------------
+    # Auto-marking of 100 % identical pairs
+    # ------------------------------------------------------------------
+
+    def _auto_mark_100pct_pairs(self):
+        """
+        For every pair with exactly 100 % similarity that has not been
+        processed yet, automatically mark one of the two books for deletion:
+
+        - EPUB vs AZW3  → mark the AZW3.
+        - Same format   → mark the larger file (by size).
+
+        Safety guarantee: at least one book per (title, authors) group is
+        always left unmarked, even if that means overriding the rule above.
+        The book kept alive is the one with the best "quality" score
+        (EPUB preferred over AZW3, then smallest file size).
+        """
+        # ── Step 1: collect candidate marks from new 100 % pairs ──────────
+        # Maps book_id → book-info dict for books we want to mark.
+        candidate_marks = {}
+
+        for pair in self.results:
+            key = self._pair_key(pair)
+            if key in self._auto_considered_pair_keys:
+                continue
+            self._auto_considered_pair_keys.add(key)
+
+            if pair.get('similarity', -1.0) < 100.0:
+                continue
+
+            a = pair['book_a']
+            b = pair['book_b']
+            fmt_a = a.get('format', '').upper()
+            fmt_b = b.get('format', '').upper()
+
+            if fmt_a != fmt_b:
+                # Mixed formats: always prefer EPUB → mark the AZW3
+                to_mark = a if fmt_a == 'AZW3' else b
+            else:
+                # Same format: mark the smaller file (keep the larger)
+                to_mark = a if a.get('size', 0) <= b.get('size', 0) else b
+
+            if to_mark['id'] not in self.ids_deleted:
+                candidate_marks[to_mark['id']] = to_mark
+
+        if not candidate_marks:
+            return
+
+        # ── Step 2: build group map (title + authors) ─────────────────────
+        groups = defaultdict(set)   # group_key → set of all book_ids
+        all_books = {}              # book_id   → book-info dict
+
+        for pair in self.results:
+            a = pair['book_a']
+            b = pair['book_b']
+            group_key = (a.get('title', '').lower(), a.get('authors', '').lower())
+            groups[group_key].add(a['id'])
+            groups[group_key].add(b['id'])
+            all_books[a['id']] = a
+            all_books[b['id']] = b
+
+        # ── Step 3: safety check — at least one book per group survives ───
+        for group_key, book_ids in groups.items():
+            already_marked = book_ids & set(self.ids_to_delete)
+            new_candidates = book_ids & set(candidate_marks.keys())
+            would_be_marked = already_marked | new_candidates
+            surviving = book_ids - would_be_marked - self.ids_deleted
+
+            if surviving:
+                continue  # At least one book will remain unmarked
+
+            # All books in this group would be deleted — un-mark the best one.
+            # "Best": EPUB over AZW3, then smallest size.
+            all_to_consider = would_be_marked - self.ids_deleted
+            if not all_to_consider:
+                continue
+
+            def _quality(bid):
+                bk = all_books.get(bid, {})
+                fmt_score = 0 if bk.get('format', '').upper() == 'EPUB' else 1
+                return (fmt_score, bk.get('size', 0))
+
+            best_bid = min(all_to_consider, key=_quality)
+            if best_bid in candidate_marks:
+                del candidate_marks[best_bid]
+            elif best_bid in self.ids_to_delete:
+                self.ids_to_delete.remove(best_bid)
+                self._marked_books_info.pop(best_bid, None)
+            logger.info('[AUTO-MARK] Preserving book id=%s (group safety: %r)',
+                        best_bid, group_key)
+
+        # ── Step 4: apply remaining candidate marks ────────────────────────
+        for book_id, book_info in candidate_marks.items():
+            if book_id not in self.ids_to_delete:
+                self.ids_to_delete.append(book_id)
+                self._marked_books_info[book_id] = {
+                    'id':     book_id,
+                    'title':  book_info.get('title', '?'),
+                    'format': book_info.get('format', '?'),
+                }
+                logger.info('[AUTO-MARK] Marked book id=%s (%s) at 100 %% similarity',
+                            book_id, book_info.get('format', '?'))
 
     # ------------------------------------------------------------------
     # UI construction
@@ -214,6 +351,16 @@ class PairReviewDialog(QDialog):
         self.next_btn.clicked.connect(self._next)
         btn_row.addWidget(self.next_btn)
 
+        self.open_a_btn = QPushButton('✏  Editar libro A')
+        self.open_a_btn.setToolTip('Abrir el libro A en el editor de calibre')
+        self.open_a_btn.clicked.connect(lambda: self._open_book('a'))
+        btn_row.addWidget(self.open_a_btn)
+
+        self.open_b_btn = QPushButton('✏  Editar libro B')
+        self.open_b_btn.setToolTip('Abrir el libro B en el editor de calibre')
+        self.open_b_btn.clicked.connect(lambda: self._open_book('b'))
+        btn_row.addWidget(self.open_b_btn)
+
         btn_row.addStretch(1)
 
         self.delete_a_btn = QPushButton('🗑  Marcar libro A')
@@ -290,6 +437,18 @@ class PairReviewDialog(QDialog):
                 b['id'], b['title'], b['format'], _human_size(b['size'])))
 
         self._refresh_delete_btns(a['id'], b['id'])
+
+    def _open_book(self, which):
+        """Abre en el editor de calibre el libro A o B del par mostrado."""
+        if not self.results:
+            return
+        pair = self.results[self.index]
+        bk = pair['book_a'] if which == 'a' else pair['book_b']
+        ok = _open_in_editor(self.gui, bk.get('id'), bk.get('format'), bk.get('path'))
+        if not ok:
+            error_dialog(self, 'No se pudo abrir',
+                         'No se pudo abrir el libro {} en el editor.'.format(which.upper()),
+                         show=True)
 
     def _refresh_delete_btns(self, id_a, id_b):
         """
@@ -466,20 +625,20 @@ class PairReviewDialog(QDialog):
         # Construir lista de títulos desde _marked_books_info, que se actualiza
         # en el momento del marcado y no depende de que el par siga en self.results.
         title_lines = [
-            '· {} (ID {}, {})'.format(
+            '{} (ID {}, {})'.format(
                 info['title'], info['id'], info['format'])
             for book_id in self.ids_to_delete
             for info in [self._marked_books_info.get(book_id, {'title': '?', 'id': book_id, 'format': '?'})]
         ]
-        titles_html = '<br>'.join(title_lines) if title_lines else ''
 
         count = len(self.ids_to_delete)
-        msg = ('<p>Vas a borrar definitivamente {} libro{}:</p>'
-               '<p style="margin-left:12px">{}</p>'
+        msg = ('<p>Vas a borrar definitivamente <b>{} libro{}</b>.</p>'
+               '<p>Despliega los detalles para ver la lista completa.</p>'
                '<p><b>Esta acción no se puede deshacer.</b></p>').format(
-            count, 's' if count > 1 else '', titles_html)
+            count, 's' if count > 1 else '')
+        det_msg = '\n'.join(title_lines)
 
-        if not confirm(msg, 'ebook_comparator_delete_pending', self):
+        if not question_dialog(self, 'Confirmar borrado', msg, det_msg=det_msg):
             return False
 
         try:
@@ -528,7 +687,9 @@ class PairReviewDialog(QDialog):
     def accept(self):
         """Handle dialog close: offer to delete marked books before closing."""
         if self.ids_to_delete:
-            self._perform_pending_deletions()
+            deleted = self._perform_pending_deletions()
+            if not deleted:
+                return  # User cancelled or error — keep dialog open
         super().accept()
 
 
@@ -585,6 +746,16 @@ class ComparisonDialog(QDialog):
         self.btn.setFixedHeight(36)
         self.btn.clicked.connect(self._run)
         control_row.addWidget(self.btn)
+
+        self.open_a_btn = QPushButton('✏  Editar A')
+        self.open_a_btn.setToolTip('Abrir el libro A en el editor de calibre')
+        self.open_a_btn.clicked.connect(partial(self._open_book_manual, 0))
+        control_row.addWidget(self.open_a_btn)
+
+        self.open_b_btn = QPushButton('✏  Editar B')
+        self.open_b_btn.setToolTip('Abrir el libro B en el editor de calibre')
+        self.open_b_btn.clicked.connect(partial(self._open_book_manual, 1))
+        control_row.addWidget(self.open_b_btn)
 
         self.delete_a_btn = QPushButton('Borrar libro A')
         self.delete_a_btn.setEnabled(False)
@@ -645,6 +816,23 @@ class ComparisonDialog(QDialog):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setVisible(False)
         root.addWidget(self.table)
+
+    def _open_book_manual(self, idx):
+        """Abre en el editor de calibre el libro A (idx=0) o B (idx=1)."""
+        try:
+            bid = self.book_ids[idx]
+        except IndexError:
+            return
+        fmt = None
+        fmts = [f.upper() for f in (self.db.formats(bid) or [])]
+        for cand in ('EPUB', 'AZW3'):
+            if cand in fmts:
+                fmt = cand
+                break
+        path = self.db.format_abspath(bid, fmt) if fmt else None
+        if not _open_in_editor(self.gui, bid, fmt, path):
+            error_dialog(self, 'No se pudo abrir',
+                         'No se pudo abrir el libro en el editor.', show=True)
 
     def _method_key(self):
         return self.method_combo.currentText().split()[0]
@@ -802,10 +990,10 @@ class ComparisonDialog(QDialog):
         """
         book_id = self.book_ids[index]
         title = self.db.field_for('title', book_id)
-        if not confirm(
+        if not question_dialog(
+            self,
+            'Confirmar borrado',
             '<p>¿Eliminar <b>{}</b>?</p><p>Esta acción no se puede deshacer.</p>'.format(title),
-            'ebook_comparator_delete',
-            self
         ):
             return
         try:

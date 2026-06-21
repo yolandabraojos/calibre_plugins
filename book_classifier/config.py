@@ -1,102 +1,52 @@
 # -*- coding: utf-8 -*-
 """
-Configuración del plugin: interfaz gráfica + almacenamiento de preferencias.
+Configuración del plugin (clasificación con IA local).
 """
 
-import json
 from qt.core import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QPlainTextEdit, QComboBox, QCheckBox, QGroupBox, QFileDialog,
-    QLineEdit, QScrollArea, QSizePolicy, Qt, QFont, QMessageBox
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QCheckBox, QGroupBox, QLineEdit, QScrollArea
 )
-from calibre.utils.config import JSONConfig
+from calibre.utils.config import JSONConfig, config_dir
 
-# ─── Valores por defecto ───────────────────────────────────────────────────────
-
-DEFAULT_RULES = {
-    "categories": [
-        {
-            "name": "Romance Regencia",
-            "require_all": False,
-            "min_keywords_match": 1,
-            "keywords": ["regencia", "regency", "romance", "ton", "temporada social"],
-            "exclude_keywords": ["paranormal", "ciencia ficcion"],
-            "priority": 10
-        },
-        {
-            "name": "Romance Histórico",
-            "require_all": False,
-            "min_keywords_match": 1,
-            "keywords": ["historico", "historical", "romance", "victoriana", "tudor", "medieval"],
-            "exclude_keywords": [],
-            "priority": 8
-        },
-        {
-            "name": "Fantasía Épica",
-            "require_all": False,
-            "min_keywords_match": 2,
-            "keywords": ["fantasia", "fantasy", "épico", "dragon", "magia", "quest"],
-            "exclude_keywords": ["romance"],
-            "priority": 9
-        },
-        {
-            "name": "Ciencia Ficción",
-            "require_all": False,
-            "min_keywords_match": 1,
-            "keywords": ["ciencia ficcion", "science fiction", "sci-fi", "espacio", "futuro", "robot"],
-            "exclude_keywords": [],
-            "priority": 9
-        },
-        {
-            "name": "Thriller",
-            "require_all": True,
-            "min_keywords_match": 1,
-            "keywords": ["thriller", "suspense"],
-            "exclude_keywords": [],
-            "priority": 7
-        }
-    ],
-    "options": {
-        "case_sensitive": False,
-        "whole_word": True,
-        "allow_multiple": True
-    }
-}
-
-# Campos estándar disponibles (clave interna → etiqueta legible)
+# Campos de los que se extrae el texto a analizar
 STANDARD_FIELDS = [
-    ('title',     'Título'),
-    ('comments',  'Comentarios / Sinopsis'),
-    ('tags',      'Etiquetas (tags)'),
-    ('series',    'Serie'),
-    ('authors',   'Autores'),
-    ('publisher', 'Editorial'),
+    ('title',    'Título'),
+    ('comments', 'Comentarios / Sinopsis'),
+    ('tags',     'Etiquetas (tags)'),
+    ('series',   'Serie'),
 ]
 
-# Almacenamiento persistente de Calibre
+# Almacenamiento persistente
 prefs = JSONConfig('plugins/book_classifier')
-prefs.defaults['rules']              = DEFAULT_RULES
-prefs.defaults['target_field']       = 'tags'
-prefs.defaults['overwrite_existing'] = False
-prefs.defaults['dry_run']            = False
-prefs.defaults['source_fields']      = ['title', 'comments', 'tags', 'series']
-prefs.defaults['extra_fields']       = []
+prefs.defaults['source_fields']     = ['title', 'comments', 'tags']
+prefs.defaults['ml_use_subtitle']   = True
+prefs.defaults['ml_subtitle_field'] = '#subtitle'
+prefs.defaults['ml_library_field']  = 'tags'
+prefs.defaults['ml_mood_field']     = 'tags'
+prefs.defaults['ml_library_prefix'] = 'Biblioteca: '
+prefs.defaults['ml_mood_prefix']    = 'Tema: '
+prefs.defaults['ml_threshold']      = 0.55
+prefs.defaults['ml_write_library']  = True
+prefs.defaults['ml_write_moods']    = True
+prefs.defaults['ml_overwrite']      = True
+# Unificación por serie / universo
+prefs.defaults['ml_group_unify']       = True
+prefs.defaults['ml_group_unify_moods'] = True
+prefs.defaults['ml_universe_field']    = '#universe'
+# Consenso por autor (tercer nivel, para los dudosos)
+prefs.defaults['ml_author_fallback']  = True
+prefs.defaults['ml_author_dominance'] = 0.6
 
-
-# ─── Widget de configuración ───────────────────────────────────────────────────
 
 class ConfigWidget(QWidget):
-
     def __init__(self):
         super().__init__()
         self._build_ui()
         self._load_values()
 
     def _build_ui(self):
-        # Scroll area so the Aceptar button is always reachable
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
@@ -104,210 +54,149 @@ class ConfigWidget(QWidget):
 
         inner = QWidget()
         scroll.setWidget(inner)
-
         layout = QVBoxLayout(inner)
-        layout.setSpacing(6)
-        layout.setContentsMargins(8, 8, 8, 8)
 
-        # ── Sección: campos de origen ───────────────────────────────────────
-        grp_source = QGroupBox('Campos que se analizan para clasificar')
+        # --- Campos de análisis ---
+        grp_source = QGroupBox('Campos de análisis (texto de entrada al modelo)')
         source_layout = QVBoxLayout(grp_source)
-        source_layout.setSpacing(3)
-
-        # Checkboxes en dos columnas
         self._source_checks = {}
-        grid = QHBoxLayout()
-        col1 = QVBoxLayout()
-        col2 = QVBoxLayout()
-        for i, (key, label) in enumerate(STANDARD_FIELDS):
+        for key, label in STANDARD_FIELDS:
             chk = QCheckBox(label)
             self._source_checks[key] = chk
-            (col1 if i % 2 == 0 else col2).addWidget(chk)
-        grid.addLayout(col1)
-        grid.addLayout(col2)
-        source_layout.addLayout(grid)
-
-        # Campos personalizados adicionales
-        custom_row = QHBoxLayout()
-        custom_row.addWidget(QLabel('Campos personalizados:'))
-        self.txt_extra = QLineEdit()
-        self.txt_extra.setPlaceholderText('#mi_campo, #otro_campo')
-        self.txt_extra.setToolTip(
-            'Nombres de campos personalizados separados por coma. '
-            'Deben empezar por #. Solo se leen campos de tipo texto.'
-        )
-        custom_row.addWidget(self.txt_extra)
-        source_layout.addLayout(custom_row)
-
+            source_layout.addWidget(chk)
+        self.chk_subtitle = QCheckBox('Subtítulo (columna personalizada)')
+        source_layout.addWidget(self.chk_subtitle)
+        row_sub = QHBoxLayout()
+        row_sub.addWidget(QLabel('Columna del subtítulo:'))
+        self.txt_subtitle_field = QLineEdit()
+        self.txt_subtitle_field.setPlaceholderText('#subtitle')
+        row_sub.addWidget(self.txt_subtitle_field)
+        source_layout.addLayout(row_sub)
         layout.addWidget(grp_source)
 
-        # ── Sección: campo destino ──────────────────────────────────────────
-        grp_field = QGroupBox('Campo destino')
-        grp_layout = QHBoxLayout(grp_field)
-        grp_layout.addWidget(QLabel('Guardar clasificación en:'))
-        self.combo_field = QComboBox()
-        self.combo_field.addItems(['tags', '#genre', '#category', '#clasificacion'])
-        self.combo_field.setEditable(True)
-        self.combo_field.setToolTip(
-            'Usa "tags" para etiquetas estándar o "#nombre_campo" para un campo personalizado'
-        )
-        grp_layout.addWidget(self.combo_field)
-        layout.addWidget(grp_field)
+        # --- Qué escribir ---
+        grp_w = QGroupBox('Qué escribir')
+        wl = QVBoxLayout(grp_w)
+        self.chk_ml_library = QCheckBox('Escribir librería sugerida (eje 1)')
+        self.chk_ml_moods   = QCheckBox('Escribir tags de tema / tropos (eje 2)')
+        self.chk_ml_overwrite = QCheckBox('Reemplazar etiquetas previas del plugin (Biblioteca:/Tema:)')
+        wl.addWidget(self.chk_ml_library)
+        wl.addWidget(self.chk_ml_moods)
+        wl.addWidget(self.chk_ml_overwrite)
+        layout.addWidget(grp_w)
 
-        # ── Sección: opciones ───────────────────────────────────────────────
-        grp_opts = QGroupBox('Opciones')
-        opts_layout = QHBoxLayout(grp_opts)
-        self.chk_overwrite = QCheckBox('Reemplazar clasificación existente')
-        self.chk_dry_run   = QCheckBox('Modo simulación (no guarda cambios)')
-        opts_layout.addWidget(self.chk_overwrite)
-        opts_layout.addWidget(self.chk_dry_run)
-        layout.addWidget(grp_opts)
+        # --- Campos destino ---
+        grp_dst = QGroupBox('Campos destino')
+        dl = QVBoxLayout(grp_dst)
 
-        # ── Sección: editor JSON ────────────────────────────────────────────
-        grp_rules = QGroupBox('Reglas de clasificación (JSON)')
-        rules_layout = QVBoxLayout(grp_rules)
+        row_lib = QHBoxLayout()
+        row_lib.addWidget(QLabel('Campo de la librería:'))
+        self.combo_ml_libfield = QComboBox()
+        self.combo_ml_libfield.addItems(['tags', '#libreria', '#genre'])
+        self.combo_ml_libfield.setEditable(True)
+        row_lib.addWidget(self.combo_ml_libfield)
+        dl.addLayout(row_lib)
 
-        toolbar = QHBoxLayout()
-        btn_validate = QPushButton('✔ Validar')
-        btn_validate.clicked.connect(self._validate_json)
-        btn_reset = QPushButton('↩ Restaurar')
-        btn_reset.clicked.connect(self._reset_rules)
-        btn_import = QPushButton('📂 Importar')
-        btn_import.clicked.connect(self._import_json)
-        btn_export = QPushButton('💾 Exportar')
-        btn_export.clicked.connect(self._export_json)
-        for btn in (btn_validate, btn_reset, btn_import, btn_export):
-            toolbar.addWidget(btn)
-        rules_layout.addLayout(toolbar)
+        row_mood = QHBoxLayout()
+        row_mood.addWidget(QLabel('Campo de los temas:'))
+        self.combo_ml_moodfield = QComboBox()
+        self.combo_ml_moodfield.addItems(['tags', '#tema'])
+        self.combo_ml_moodfield.setEditable(True)
+        row_mood.addWidget(self.combo_ml_moodfield)
+        dl.addLayout(row_mood)
 
-        self.txt_rules = QPlainTextEdit()
-        font = QFont('Courier New', 10)
-        font.setFixedPitch(True)
-        self.txt_rules.setFont(font)
-        self.txt_rules.setMinimumHeight(180)
-        rules_layout.addWidget(self.txt_rules)
+        row_th = QHBoxLayout()
+        row_th.addWidget(QLabel('Confianza mínima (0–1), si no → "(revisar)":'))
+        self.txt_ml_threshold = QLineEdit()
+        self.txt_ml_threshold.setPlaceholderText('0.55')
+        row_th.addWidget(self.txt_ml_threshold)
+        dl.addLayout(row_th)
+        layout.addWidget(grp_dst)
 
-        help_label = QLabel(
-            '<small>'
-            '<b>keywords</b>: palabras a buscar · '
-            '<b>require_all: true</b> = todas · <b>false</b> = basta una · '
-            '<b>min_keywords_match</b>: mín. de coincidencias necesarias · '
-            '<b>priority</b>: mayor = gana'
-            '</small>'
-        )
-        help_label.setWordWrap(True)
-        help_label.setTextFormat(Qt.RichText)
-        rules_layout.addWidget(help_label)
+        # --- Unificación por serie / universo / autor ---
+        grp_grp = QGroupBox('Coherencia entre libros')
+        gl = QVBoxLayout(grp_grp)
+        self.chk_group_unify = QCheckBox('Misma librería para toda la serie/universo')
+        self.chk_group_moods = QCheckBox('Unir los tags de tema de todo el grupo')
+        gl.addWidget(self.chk_group_unify)
+        gl.addWidget(self.chk_group_moods)
+        row_u = QHBoxLayout()
+        row_u.addWidget(QLabel('Columna de universo:'))
+        self.txt_universe = QLineEdit()
+        self.txt_universe.setPlaceholderText('#universe')
+        row_u.addWidget(self.txt_universe)
+        gl.addLayout(row_u)
+        gl.addWidget(QLabel('<small>Manda el universo; si está vacío, agrupa por serie. '
+                            'Gana la librería de mayor confianza sumada del grupo.</small>'))
 
-        layout.addWidget(grp_rules)
+        self.chk_author = QCheckBox('Para los dudosos, usar la librería dominante del autor')
+        gl.addWidget(self.chk_author)
+        row_a = QHBoxLayout()
+        row_a.addWidget(QLabel('Mayoría mínima del autor (0–1):'))
+        self.txt_author_dom = QLineEdit()
+        self.txt_author_dom.setPlaceholderText('0.6')
+        row_a.addWidget(self.txt_author_dom)
+        gl.addLayout(row_a)
+        layout.addWidget(grp_grp)
+
+        info = QLabel(
+            "<small>El modelo (<b>model_weights.json</b>) y las reglas de tema "
+            "(<b>mood_rules.json</b>) se cargan del plugin, o de la carpeta de "
+            f"configuración de Calibre si los pones ahí:<br><b>{config_dir}</b></small>")
+        info.setWordWrap(True)
+        layout.addWidget(info)
 
     def _load_values(self):
         active = prefs['source_fields']
         for key, chk in self._source_checks.items():
             chk.setChecked(key in active)
-
-        self.txt_extra.setText(', '.join(prefs['extra_fields']))
-
-        field = prefs['target_field']
-        idx = self.combo_field.findText(field)
-        if idx >= 0:
-            self.combo_field.setCurrentIndex(idx)
-        else:
-            self.combo_field.setEditText(field)
-
-        self.chk_overwrite.setChecked(prefs['overwrite_existing'])
-        self.chk_dry_run.setChecked(prefs['dry_run'])
-
-        self.txt_rules.setPlainText(
-            json.dumps(prefs['rules'], ensure_ascii=False, indent=2)
-        )
+        self.chk_subtitle.setChecked(prefs['ml_use_subtitle'])
+        self.txt_subtitle_field.setText(prefs['ml_subtitle_field'])
+        self.chk_ml_library.setChecked(prefs['ml_write_library'])
+        self.chk_ml_moods.setChecked(prefs['ml_write_moods'])
+        self.chk_ml_overwrite.setChecked(prefs['ml_overwrite'])
+        self.combo_ml_libfield.setEditText(prefs['ml_library_field'])
+        self.combo_ml_moodfield.setEditText(prefs['ml_mood_field'])
+        self.txt_ml_threshold.setText(str(prefs['ml_threshold']))
+        self.chk_group_unify.setChecked(prefs['ml_group_unify'])
+        self.chk_group_moods.setChecked(prefs['ml_group_unify_moods'])
+        self.txt_universe.setText(prefs['ml_universe_field'])
+        self.chk_author.setChecked(prefs['ml_author_fallback'])
+        self.txt_author_dom.setText(str(prefs['ml_author_dominance']))
 
     def save_settings(self):
-        rules = self._parse_json()
-        if rules is None:
-            return
-
-        prefs['source_fields']      = [key for key, chk in self._source_checks.items()
-                                        if chk.isChecked()]
-        raw_extra                   = self.txt_extra.text()
-        prefs['extra_fields']       = [f.strip() for f in raw_extra.split(',')
-                                        if f.strip().startswith('#')]
-        prefs['target_field']       = self.combo_field.currentText().strip()
-        prefs['overwrite_existing'] = self.chk_overwrite.isChecked()
-        prefs['dry_run']            = self.chk_dry_run.isChecked()
-        prefs['rules']              = rules
-
-    # ─── Helpers ──────────────────────────────────────────────────────────────
-
-    def _parse_json(self):
+        prefs['source_fields'] = [k for k, c in self._source_checks.items() if c.isChecked()]
+        prefs['ml_use_subtitle']   = self.chk_subtitle.isChecked()
+        prefs['ml_subtitle_field'] = self.txt_subtitle_field.text().strip() or '#subtitle'
+        prefs['ml_write_library'] = self.chk_ml_library.isChecked()
+        prefs['ml_write_moods']   = self.chk_ml_moods.isChecked()
+        prefs['ml_overwrite']     = self.chk_ml_overwrite.isChecked()
+        prefs['ml_library_field'] = self.combo_ml_libfield.currentText().strip() or 'tags'
+        prefs['ml_mood_field']    = self.combo_ml_moodfield.currentText().strip() or 'tags'
         try:
-            return json.loads(self.txt_rules.toPlainText())
-        except json.JSONDecodeError as e:
-            QMessageBox.critical(self, 'JSON inválido', f'Error al parsear JSON:\n\n{e}')
-            return None
-
-    def _validate_json(self):
-        rules = self._parse_json()
-        if rules is None:
-            return
-        cats = rules.get('categories', [])
-        QMessageBox.information(
-            self, 'JSON válido',
-            f'El JSON es válido.\n\n{len(cats)} categoría(s) definida(s):\n' +
-            '\n'.join(f'  • {c.get("name", "?")} ({len(c.get("keywords", []))} keywords)'
-                      for c in cats)
-        )
-
-    def _reset_rules(self):
-        self.txt_rules.setPlainText(
-            json.dumps(DEFAULT_RULES, ensure_ascii=False, indent=2)
-        )
-
-    def _import_json(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, 'Importar reglas JSON', '', 'JSON (*.json)'
-        )
-        if not path:
-            return
+            prefs['ml_threshold'] = max(0.0, min(1.0, float(self.txt_ml_threshold.text().strip() or '0.55')))
+        except ValueError:
+            prefs['ml_threshold'] = 0.55
+        prefs['ml_group_unify']       = self.chk_group_unify.isChecked()
+        prefs['ml_group_unify_moods'] = self.chk_group_moods.isChecked()
+        prefs['ml_universe_field']    = self.txt_universe.text().strip() or '#universe'
+        prefs['ml_author_fallback']   = self.chk_author.isChecked()
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            json.loads(content)
-            self.txt_rules.setPlainText(content)
-        except Exception as e:
-            QMessageBox.critical(self, 'Error al importar', str(e))
+            prefs['ml_author_dominance'] = max(0.0, min(1.0, float(self.txt_author_dom.text().strip() or '0.6')))
+        except ValueError:
+            prefs['ml_author_dominance'] = 0.6
 
-    def _export_json(self):
-        rules = self._parse_json()
-        if rules is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, 'Exportar reglas JSON', 'clasificacion_libros.json', 'JSON (*.json)'
-        )
-        if not path:
-            return
-        try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(rules, f, ensure_ascii=False, indent=2)
-            QMessageBox.information(self, 'Exportado', f'Reglas guardadas en:\n{path}')
-        except Exception as e:
-            QMessageBox.critical(self, 'Error al exportar', str(e))
 
 def show_config_dialog(gui):
     from qt.core import QDialog, QVBoxLayout, QDialogButtonBox
-    
     dialog = QDialog(gui)
-    dialog.setWindowTitle('Configurar Book Classifier')
+    dialog.setWindowTitle('Configurar Book Classifier (IA)')
     layout = QVBoxLayout(dialog)
-    
     widget = ConfigWidget()
     layout.addWidget(widget)
-    
-    # Botones de Aceptar y Cancelar
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
-    
     if dialog.exec() == QDialog.DialogCode.Accepted:
         widget.save_settings()

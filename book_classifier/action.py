@@ -6,52 +6,255 @@ __license__ = 'GPL v3'
 import pkgutil
 import traceback
 from calibre.gui2.actions import InterfaceAction
-from calibre.gui2 import error_dialog, info_dialog, question_dialog
+from calibre.gui2 import error_dialog, question_dialog
 from qt.core import QIcon, QMenu, QAction, QPixmap, QProgressDialog, Qt, QFontMetrics
 
 from calibre_plugins.book_classifier.config import prefs
-from calibre_plugins.book_classifier.jobs import start_classify_threaded, apply_writes
+from calibre_plugins.book_classifier.ml_jobs import start_ml_classify_threaded, apply_ml_writes
 
 try:
     from calibre_plugins.book_classifier import get_icons
 except ImportError:
     get_icons = None
 
+
 class BookClassifierAction(InterfaceAction):
     name = 'Book Classifier'
-    action_spec = ('Clasificar Libros', None, 'Clasificar libros automáticamente', None)
+    action_spec = ('Clasificar Libros', None, 'Clasificar libros con IA local', None)
     action_type = 'current'
 
     def genesis(self):
-        print("DEBUG: Plugin Book Classifier cargando...")
+        print("DEBUG: Plugin Book Classifier (IA) cargando...")
         self._load_icon()
-        
-        # Crear el menú desplegable
+
         menu = QMenu(self.gui)
         self.qaction.setMenu(menu)
-        
-        # Opción 1: Clasificar seleccionados
-        act_selected = QAction('Clasificar seleccionados', self.gui)
-        act_selected.triggered.connect(self.classify_selected)
-        menu.addAction(act_selected)
 
-        # Opción 2: Clasificar todos
-        act_all = QAction('Clasificar TODOS los libros', self.gui)
-        act_all.triggered.connect(self.classify_all)
+        act_sel = QAction('Clasificar libros seleccionados', self.gui)
+        act_sel.triggered.connect(lambda: self._method_ml(all_books=False))
+        menu.addAction(act_sel)
+
+        act_all = QAction('Clasificar TODA la biblioteca', self.gui)
+        act_all.triggered.connect(lambda: self._method_ml(all_books=True))
         menu.addAction(act_all)
-        
-        # Separador visual
+
         menu.addSeparator()
 
-        # Añadir la opción de configuración al menú
+        sub_clear = QMenu('Limpiar clasificaciones del plugin', self.gui)
+        act_clear_sel = QAction('Libros seleccionados', self.gui)
+        act_clear_all = QAction('Toda la biblioteca', self.gui)
+        act_clear_sel.triggered.connect(lambda: self._clear_classifications(all_books=False))
+        act_clear_all.triggered.connect(lambda: self._clear_classifications(all_books=True))
+        sub_clear.addAction(act_clear_sel)
+        sub_clear.addAction(act_clear_all)
+        menu.addMenu(sub_clear)
+
+        menu.addSeparator()
+
         act_config = QAction('Configurar plugin...', self.gui)
-        act_config.triggered.connect(self.show_rules)
+        act_config.triggered.connect(self.show_config)
         menu.addAction(act_config)
 
-        # Qué hacer si hacen clic en el botón directamente (no en el menú)
-        self.qaction.triggered.connect(self.classify_selected)
+        self.qaction.triggered.connect(lambda: self._method_ml(all_books=False))
+        print("DEBUG: Plugin Book Classifier (IA) listo.")
 
-        print("DEBUG: Plugin Book Classifier listo.")
+    # ─── Selección ────────────────────────────────────────────────────────────
+
+    def _get_selected_ids(self):
+        rows = self.gui.library_view.selectionModel().selectedRows()
+        return [self.gui.library_view.model().id(r) for r in rows]
+
+    def _get_all_ids(self):
+        return list(self.gui.current_db.all_ids())
+
+    def _resolve_book_ids(self, all_books):
+        if all_books:
+            if not question_dialog(self.gui, 'Confirmar', '¿Aplicar a TODA la biblioteca?'):
+                return None
+            return self._get_all_ids()
+        ids = self._get_selected_ids()
+        if not ids:
+            error_dialog(self.gui, 'Error', 'No hay libros seleccionados.', show=True)
+            return None
+        return ids
+
+    # ─── Clasificación con IA ─────────────────────────────────────────────────
+
+    def _method_ml(self, all_books=False):
+        book_ids = self._resolve_book_ids(all_books)
+        if book_ids is None:
+            return
+        print("DEBUG: IA local en {} libros".format(len(book_ids)))
+        self._run_ml_classifier(book_ids)
+
+    def _run_ml_classifier(self, book_ids):
+        try:
+            settings = {
+                'library_field':  prefs.get('ml_library_field', 'tags'),
+                'mood_field':     prefs.get('ml_mood_field', 'tags'),
+                'library_prefix': prefs.get('ml_library_prefix', 'Biblioteca: '),
+                'mood_prefix':    prefs.get('ml_mood_prefix', 'Tema: '),
+                'threshold':      prefs.get('ml_threshold', 0.55),
+                'write_library':  prefs.get('ml_write_library', True),
+                'write_moods':    prefs.get('ml_write_moods', True),
+                'overwrite':      prefs.get('ml_overwrite', True),
+                'source_fields':  prefs.get('source_fields', ['title', 'comments', 'tags']),
+                'use_subtitle':   prefs.get('ml_use_subtitle', True),
+                'subtitle_field': prefs.get('ml_subtitle_field', '#subtitle'),
+                'group_unify':       prefs.get('ml_group_unify', True),
+                'group_unify_moods': prefs.get('ml_group_unify_moods', True),
+                'universe_field':    prefs.get('ml_universe_field', '#universe'),
+                'author_fallback':   prefs.get('ml_author_fallback', True),
+                'author_dominance':  prefs.get('ml_author_dominance', 0.6),
+            }
+
+            worker, thread = start_ml_classify_threaded(self.gui, book_ids, settings)
+
+            self._progress_dialog = QProgressDialog(
+                'Clasificando con IA...', 'Cancelar', 0, len(book_ids), self.gui)
+            self._progress_dialog.setWindowTitle('Clasificación IA')
+            self._progress_dialog.setWindowModality(Qt.WindowModal)
+            self._progress_dialog.setMinimumDuration(0)
+            self._progress_dialog.setValue(0)
+            self._progress_dialog.canceled.connect(worker.cancel)
+
+            worker.progress.connect(self._update_progress)
+            worker.finished.connect(self._finish_progress)
+            worker.finished.connect(self._ml_job_finished)
+            thread.finished.connect(self._clear_thread)
+
+            self._active_worker = worker
+            self._active_thread = thread
+            thread.start()
+        except Exception:
+            print("DEBUG ERROR: Fallo al lanzar el clasificador IA")
+            traceback.print_exc()
+
+    def _ml_job_finished(self, result):
+        try:
+            if not isinstance(result, dict):
+                error_dialog(self.gui, 'Error', 'Resultado IA inesperado.', show=True)
+                return
+            if result.get('failed'):
+                error_dialog(self.gui, 'Error',
+                             'No se pudo cargar el modelo IA:\n{}'.format(result.get('error', '')),
+                             show=True)
+                return
+            if result.get('writes_by_field'):
+                apply_ml_writes(self.gui, result['writes_by_field'])
+            self._show_ml_results(result)
+        except Exception:
+            print("DEBUG ERROR en _ml_job_finished:")
+            traceback.print_exc()
+
+    def _show_ml_results(self, stats):
+        try:
+            from qt.core import QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QTextEdit
+
+            dialog = QDialog(self.gui)
+            dialog.setWindowTitle('Resultados de clasificación IA')
+            dialog.resize(620, 520)
+            layout = QVBoxLayout(dialog)
+
+            lines = []
+            if stats.get('cancelled'):
+                lines.append('Cancelado por el usuario.')
+            lines += [
+                'Total escaneados:  {}'.format(stats.get('total', 0)),
+                'Clasificados:      {}'.format(stats.get('classified', 0)),
+                'Errores:           {}'.format(stats.get('errors', 0)),
+                'Grupos unificados: {}  ({} libros heredaron la librería del grupo)'.format(
+                    stats.get('group_count', 0), stats.get('unified_books', 0)),
+                'Resueltos por autor: {}'.format(stats.get('author_resolved', 0)),
+                '',
+                'Reparto por librería:',
+            ]
+            dist = stats.get('dist', {})
+            for name in sorted(dist, key=lambda k: -dist[k]):
+                lines.append('   {:<28} {}'.format(name, dist[name]))
+            layout.addWidget(QLabel('\n'.join(lines)))
+
+            details = stats.get('book_details', [])
+            if details:
+                txt = QTextEdit()
+                txt.setReadOnly(True)
+                body = []
+                for d in details:
+                    flag = '  [REVISAR]' if d.get('uncertain') else ''
+                    tier = d.get('tier', '')
+                    tier_s = '  ·{}'.format(tier) if tier and tier != 'individual' else ''
+                    body.append('{}  ->  {} ({:.0%}){}{}'.format(
+                        d['title'][:46], d.get('library') or '(sin datos)',
+                        d.get('confidence', 0), tier_s, flag))
+                    if d.get('moods'):
+                        body.append('      tema: {}'.format(', '.join(d['moods'])))
+                txt.setPlainText('\n'.join(body))
+                layout.addWidget(txt)
+
+            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+            btns.accepted.connect(dialog.accept)
+            layout.addWidget(btns)
+            dialog.exec()
+        except Exception:
+            print("DEBUG ERROR en _show_ml_results:")
+            traceback.print_exc()
+
+    # ─── Limpiar ──────────────────────────────────────────────────────────────
+
+    def _clear_classifications(self, all_books=False):
+        lib_field   = prefs.get('ml_library_field', 'tags')
+        mood_field  = prefs.get('ml_mood_field', 'tags')
+        lib_prefix  = prefs.get('ml_library_prefix', 'Biblioteca: ')
+        mood_prefix = prefs.get('ml_mood_prefix', 'Tema: ')
+        fields = {lib_field, mood_field}
+        prefixes = (lib_prefix, mood_prefix)
+
+        scope_label = 'TODA la biblioteca' if all_books else 'los libros seleccionados'
+        if not question_dialog(
+            self.gui, 'Confirmar limpieza',
+            '¿Quitar las etiquetas del plugin (que empiezan por <b>{}</b> o <b>{}</b>) '
+            'de {}?'.format(lib_prefix, mood_prefix, scope_label)
+        ):
+            return
+
+        book_ids = self._resolve_book_ids(all_books)
+        if book_ids is None:
+            return
+
+        db = self.gui.current_db.new_api
+        touched = set()
+        try:
+            for field in fields:
+                id_map = {}
+                for bid in book_ids:
+                    val = list(db.field_for(field, bid)) if field == 'tags' else db.field_for(field, bid)
+                    if isinstance(val, (list, tuple)):
+                        kept = [v for v in val if not any(str(v).startswith(p) for p in prefixes)]
+                        id_map[bid] = kept
+                    elif val:
+                        kept = [v.strip() for v in str(val).split(',')
+                                if v.strip() and not any(v.strip().startswith(p) for p in prefixes)]
+                        id_map[bid] = ', '.join(kept)
+                if id_map:
+                    db.set_field(field, id_map)
+                    touched.update(id_map.keys())
+            if touched:
+                self.gui.library_view.model().refresh_ids(list(touched))
+
+            from qt.core import QDialog, QVBoxLayout, QDialogButtonBox, QLabel
+            dlg = QDialog(self.gui)
+            dlg.setWindowTitle('Limpieza completada')
+            layout = QVBoxLayout(dlg)
+            layout.addWidget(QLabel('Etiquetas del plugin quitadas de <b>{}</b> libros.'.format(len(touched))))
+            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+            btns.accepted.connect(dlg.accept)
+            layout.addWidget(btns)
+            dlg.exec()
+        except Exception:
+            traceback.print_exc()
+            error_dialog(self.gui, 'Error', 'No se pudo limpiar. Revisa el log.', show=True)
+
+    # ─── Progreso / icono / config ────────────────────────────────────────────
 
     def _load_icon(self):
         try:
@@ -60,76 +263,19 @@ class BookClassifierAction(InterfaceAction):
                 if icon is not None:
                     self.qaction.setIcon(icon)
                     return
-
             data = pkgutil.get_data(__package__, 'images/icon.png')
             if data:
                 pixmap = QPixmap()
                 if pixmap.loadFromData(data, 'PNG'):
                     self.qaction.setIcon(QIcon(pixmap))
-                else:
-                    print('DEBUG ERROR: No se pudo cargar pixmap del icono')
-            else:
-                print('DEBUG ERROR: No se encontró images/icon.png en el paquete')
         except Exception as e:
-            print('DEBUG ERROR: No se pudo cargar el icono manualmente -', e)
-
-    def classify_selected(self):
-        rows = self.gui.library_view.selectionModel().selectedRows()
-        if not rows:
-            error_dialog(self.gui, 'Error', 'No hay libros seleccionados.', show=True)
-            return
-        book_ids = [self.gui.library_view.model().id(r) for r in rows]
-        print("DEBUG: Iniciando clasificación de {} libros".format(len(book_ids)))
-        self._run_classifier(book_ids)
-
-    def classify_all(self):
-        if not question_dialog(self.gui, 'Confirmar', '¿Clasificar TODA la biblioteca?'):
-            return
-        book_ids = self.gui.current_db.all_ids()
-        self._run_classifier(book_ids)
-
-    def _run_classifier(self, book_ids):
-        try:
-            rules = prefs.get('rules', {})
-            if not rules or not rules.get('categories'):
-                error_dialog(self.gui, 'Error', 'No hay reglas configuradas. Ve a Configurar plugin.', show=True)
-                return
-
-            worker, thread = start_classify_threaded(
-                gui           = self.gui,
-                book_ids      = book_ids,
-                rules         = rules,
-                target_field  = prefs.get('target_field', 'tags'),
-                overwrite     = prefs.get('overwrite_existing', False),
-                dry_run       = prefs.get('dry_run', False),
-                source_fields = prefs.get('source_fields', ['title', 'comments', 'tags', 'series']),
-                extra_fields  = prefs.get('extra_fields', []),
-            )
-
-            self._progress_dialog = QProgressDialog('Analizando metadatos...', 'Cancelar', 0, len(book_ids), self.gui)
-            self._progress_dialog.setWindowTitle('Clasificando libros')
-            self._progress_dialog.setWindowModality(Qt.WindowModal)
-            self._progress_dialog.setMinimumDuration(0)
-            self._progress_dialog.setValue(0)
-            self._progress_dialog.canceled.connect(worker.cancel)
-
-            worker.progress.connect(self._update_progress)
-            worker.finished.connect(self._finish_progress)
-            worker.finished.connect(self._job_finished)
-            thread.finished.connect(self._clear_thread)
-
-            self._active_worker = worker
-            self._active_thread = thread
-            thread.start()
-        except Exception:
-            print("DEBUG ERROR: Fallo al lanzar el clasificador")
-            traceback.print_exc()
+            print('DEBUG ERROR: No se pudo cargar el icono -', e)
 
     def _update_progress(self, index, title):
         if hasattr(self, '_progress_dialog') and self._progress_dialog:
             fm = QFontMetrics(self._progress_dialog.font())
-            elided_title = fm.elidedText(title, Qt.ElideRight, 320)
-            self._progress_dialog.setLabelText('Analizando: ' + elided_title)
+            elided = fm.elidedText(title, Qt.ElideRight, 320)
+            self._progress_dialog.setLabelText('Analizando: ' + elided)
             self._progress_dialog.setValue(index)
 
     def _finish_progress(self, result):
@@ -139,36 +285,9 @@ class BookClassifierAction(InterfaceAction):
             self._progress_dialog = None
 
     def _clear_thread(self):
+        self._active_worker = None
         self._active_thread = None
 
-    def _job_finished(self, result):
-        if isinstance(result, dict):
-            job_failed = result.get('failed', False)
-            stats = result
-        else:
-            job_failed = result.failed
-            stats = result.result
-
-        if job_failed:
-            print("DEBUG: El trabajo de fondo falló")
-            error_dialog(self.gui, 'Error', 'El trabajo falló. Revisa el log.', show=True)
-            return
-
-        if not prefs.get('dry_run', False) and stats.get('writes'):
-            print("DEBUG: Aplicando cambios a la DB...")
-            apply_writes(self.gui, stats['writes'], prefs.get('target_field', 'tags'))
-
-        status_lines = [
-            'Total escaneados: {}'.format(stats.get('total', 0)),
-            'Clasificados: {}'.format(stats.get('classified', 0)),
-            'Saltados: {}'.format(stats.get('skipped', 0)),
-            'Errores: {}'.format(stats.get('errors', 0)),
-        ]
-        if stats.get('cancelled'):
-            status_lines.insert(0, 'Cancelado por el usuario.')
-
-        info_dialog(self.gui, 'Fin', '\n'.join(status_lines), show=True)
-
-    def show_rules(self):
+    def show_config(self):
         from calibre_plugins.book_classifier.config import show_config_dialog
         show_config_dialog(self.gui)
