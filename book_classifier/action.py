@@ -11,6 +11,7 @@ from qt.core import QIcon, QMenu, QAction, QPixmap, QProgressDialog, Qt, QFontMe
 
 from calibre_plugins.book_classifier.config import prefs
 from calibre_plugins.book_classifier.ml_jobs import start_ml_classify_threaded, apply_ml_writes
+from calibre_plugins.book_classifier.llm_jobs import start_llm_rescue_threaded
 
 try:
     from calibre_plugins.book_classifier import get_icons
@@ -37,6 +38,16 @@ class BookClassifierAction(InterfaceAction):
         act_all = QAction('Clasificar TODA la biblioteca', self.gui)
         act_all.triggered.connect(lambda: self._method_ml(all_books=True))
         menu.addAction(act_all)
+
+        menu.addSeparator()
+
+        act_llm_sel = QAction('Rescatar con IA los no clasificados (seleccion)', self.gui)
+        act_llm_sel.triggered.connect(lambda: self._method_llm_rescue(all_books=False))
+        menu.addAction(act_llm_sel)
+
+        act_llm_all = QAction('Rescatar con IA los no clasificados (toda la biblioteca)', self.gui)
+        act_llm_all.triggered.connect(lambda: self._method_llm_rescue(all_books=True))
+        menu.addAction(act_llm_all)
 
         menu.addSeparator()
 
@@ -108,6 +119,18 @@ class BookClassifierAction(InterfaceAction):
                 'author_dominance':  prefs.get('ml_author_dominance', 0.6),
             }
 
+            missing = self._check_missing_fields(settings)
+            if missing:
+                error_dialog(
+                    self.gui, 'Columna no encontrada',
+                    'Estas columnas configuradas en Book Classifier no existen en '
+                    'esta biblioteca:\n\n{}\n\n'
+                    'Créalas (Preferencias → Añadir columnas personalizadas) o '
+                    'corrige la configuración del plugin antes de clasificar.'.format(
+                        '\n'.join('  - {} ({})'.format(f, u) for f, u in missing)),
+                    show=True)
+                return
+
             worker, thread = start_ml_classify_threaded(self.gui, book_ids, settings)
 
             self._progress_dialog = QProgressDialog(
@@ -129,6 +152,32 @@ class BookClassifierAction(InterfaceAction):
         except Exception:
             print("DEBUG ERROR: Fallo al lanzar el clasificador IA")
             traceback.print_exc()
+
+    def _check_missing_fields(self, settings):
+        """Devuelve [(campo, uso)] para los campos configurados que no existen
+        en esta biblioteca ('tags' es estándar y siempre existe)."""
+        db = self.gui.current_db.new_api
+        try:
+            valid = set(db.field_metadata.all_field_keys())
+        except Exception:
+            return []
+        checks = [
+            (settings['library_field'], 'campo de librería'),
+            (settings['mood_field'], 'campo de temas'),
+        ]
+        if settings.get('use_subtitle'):
+            checks.append((settings['subtitle_field'], 'subtítulo'))
+        if settings.get('group_unify'):
+            checks.append((settings['universe_field'], 'universo'))
+        missing = []
+        seen = set()
+        for field, uso in checks:
+            if not field or field == 'tags' or field in seen:
+                continue
+            seen.add(field)
+            if field not in valid:
+                missing.append((field, uso))
+        return missing
 
     def _ml_job_finished(self, result):
         try:
@@ -199,6 +248,121 @@ class BookClassifierAction(InterfaceAction):
             print("DEBUG ERROR en _show_ml_results:")
             traceback.print_exc()
 
+    # ─── Rescate con IA (capa hibrida LLM) ────────────────────────────────────
+
+    def _method_llm_rescue(self, all_books=False):
+        book_ids = self._resolve_book_ids(all_books)
+        if book_ids is None:
+            return
+        self._run_llm_rescue(book_ids)
+
+    def _run_llm_rescue(self, book_ids):
+        try:
+            provider = prefs.get('llm_provider', 'glm')
+            key = (prefs.get('llm_api_key') or '').strip()
+            if provider != 'local' and not key:
+                error_dialog(
+                    self.gui, 'Falta la clave de API',
+                    'Configura el proveedor y la clave en '
+                    'Configurar plugin -> Rescate con IA en la nube.', show=True)
+                return
+            settings = {
+                'library_field':  prefs.get('ml_library_field', 'tags'),
+                'mood_field':     prefs.get('ml_mood_field', 'tags'),
+                'library_prefix': prefs.get('ml_library_prefix', 'Biblioteca: '),
+                'mood_prefix':    prefs.get('ml_mood_prefix', 'Tema: '),
+                'overwrite':      prefs.get('ml_overwrite', True),
+                'llm_provider':   provider,
+                'llm_api_key':    key,
+                'llm_model':      prefs.get('llm_model', ''),
+                'llm_batch':      prefs.get('llm_batch', 10),
+                'llm_min_conf':   prefs.get('llm_min_conf', 0.55),
+                'llm_write_temas': prefs.get('llm_write_temas', True),
+            }
+            worker, thread = start_llm_rescue_threaded(self.gui, book_ids, settings)
+
+            self._progress_dialog = QProgressDialog(
+                'Rescatando con IA...', 'Cancelar', 0, len(book_ids), self.gui)
+            self._progress_dialog.setWindowTitle('Rescate con IA')
+            self._progress_dialog.setWindowModality(Qt.WindowModal)
+            self._progress_dialog.setMinimumDuration(0)
+            self._progress_dialog.setValue(0)
+            self._progress_dialog.canceled.connect(worker.cancel)
+
+            worker.progress.connect(self._update_progress)
+            worker.finished.connect(self._finish_progress)
+            worker.finished.connect(self._llm_job_finished)
+            thread.finished.connect(self._clear_thread)
+
+            self._active_worker = worker
+            self._active_thread = thread
+            thread.start()
+        except Exception:
+            print("DEBUG ERROR: Fallo al lanzar el rescate IA")
+            traceback.print_exc()
+
+    def _llm_job_finished(self, result):
+        try:
+            if not isinstance(result, dict):
+                error_dialog(self.gui, 'Error', 'Resultado de rescate inesperado.', show=True)
+                return
+            if result.get('failed'):
+                error_dialog(self.gui, 'Rescate con IA',
+                             result.get('error', 'Fallo desconocido'), show=True)
+                return
+            if result.get('writes_by_field'):
+                apply_ml_writes(self.gui, result['writes_by_field'])
+            self._show_llm_results(result)
+        except Exception:
+            print("DEBUG ERROR en _llm_job_finished:")
+            traceback.print_exc()
+
+    def _show_llm_results(self, stats):
+        try:
+            from qt.core import QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QTextEdit
+            dialog = QDialog(self.gui)
+            dialog.setWindowTitle('Resultados del rescate con IA')
+            dialog.resize(620, 520)
+            layout = QVBoxLayout(dialog)
+
+            lines = []
+            if stats.get('cancelled'):
+                lines.append('Cancelado por el usuario.')
+            lines += [
+                'Libros revisados:         {}'.format(stats.get('total', 0)),
+                'No clasificados hallados: {}'.format(stats.get('candidates', 0)),
+                'Rescatados por la IA:     {}'.format(stats.get('rescued', 0)),
+                'Errores:                  {}'.format(stats.get('errors', 0)),
+            ]
+            if stats.get('first_error'):
+                lines.append('Primer error: {}'.format(str(stats['first_error'])[:200]))
+            lines += ['', 'Reparto por libreria (IA):']
+            dist = stats.get('dist', {})
+            for name in sorted(dist, key=lambda k: -dist[k]):
+                lines.append('   {:<28} {}'.format(name, dist[name]))
+            layout.addWidget(QLabel('\n'.join(lines)))
+
+            details = stats.get('book_details', [])
+            if details:
+                txt = QTextEdit()
+                txt.setReadOnly(True)
+                body = []
+                for d in details:
+                    body.append('{}  ->  {} ({:.0%})'.format(
+                        d['title'][:46], d.get('library') or '?', d.get('confidence', 0)))
+                    if d.get('moods'):
+                        body.append('      tema: {}'.format(', '.join(d['moods'])))
+                txt.setPlainText('\n'.join(body))
+                layout.addWidget(txt)
+
+            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+            btns.accepted.connect(dialog.accept)
+            layout.addWidget(btns)
+            dialog.exec()
+        except Exception:
+            print("DEBUG ERROR en _show_llm_results:")
+            traceback.print_exc()
+
     # ─── Limpiar ──────────────────────────────────────────────────────────────
 
     def _clear_classifications(self, all_books=False):
@@ -206,14 +370,19 @@ class BookClassifierAction(InterfaceAction):
         mood_field  = prefs.get('ml_mood_field', 'tags')
         lib_prefix  = prefs.get('ml_library_prefix', 'Biblioteca: ')
         mood_prefix = prefs.get('ml_mood_prefix', 'Tema: ')
-        fields = {lib_field, mood_field}
-        prefixes = (lib_prefix, mood_prefix)
+
+        # Prefijos "propios" de cada campo destino: en 'tags' (compartido) se
+        # filtra por el prefijo real; en una columna dedicada del plugin
+        # (p.ej. #biblioteca) no hay prefijo — se vacía entera, porque todo su
+        # contenido pertenece al plugin.
+        field_prefixes = {}
+        field_prefixes.setdefault(lib_field, set()).add(lib_prefix if lib_field == 'tags' else '')
+        field_prefixes.setdefault(mood_field, set()).add(mood_prefix if mood_field == 'tags' else '')
 
         scope_label = 'TODA la biblioteca' if all_books else 'los libros seleccionados'
         if not question_dialog(
             self.gui, 'Confirmar limpieza',
-            '¿Quitar las etiquetas del plugin (que empiezan por <b>{}</b> o <b>{}</b>) '
-            'de {}?'.format(lib_prefix, mood_prefix, scope_label)
+            '¿Quitar las clasificaciones del plugin (librería y temas) de {}?'.format(scope_label)
         ):
             return
 
@@ -224,7 +393,7 @@ class BookClassifierAction(InterfaceAction):
         db = self.gui.current_db.new_api
         touched = set()
         try:
-            for field in fields:
+            for field, prefixes in field_prefixes.items():
                 id_map = {}
                 for bid in book_ids:
                     val = list(db.field_for(field, bid)) if field == 'tags' else db.field_for(field, bid)
@@ -245,7 +414,7 @@ class BookClassifierAction(InterfaceAction):
             dlg = QDialog(self.gui)
             dlg.setWindowTitle('Limpieza completada')
             layout = QVBoxLayout(dlg)
-            layout.addWidget(QLabel('Etiquetas del plugin quitadas de <b>{}</b> libros.'.format(len(touched))))
+            layout.addWidget(QLabel('Clasificaciones del plugin quitadas de <b>{}</b> libros.'.format(len(touched))))
             btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
             btns.accepted.connect(dlg.accept)
             layout.addWidget(btns)
@@ -263,7 +432,21 @@ class BookClassifierAction(InterfaceAction):
                 if icon is not None:
                     self.qaction.setIcon(icon)
                     return
-            data = pkgutil.get_data(__package__, 'images/icon.png')
+            data = None
+            try:
+                data = pkgutil.get_data(__package__, 'images/icon.png')
+            except Exception:
+                data = None
+            if not data:
+                # mismo problema que con model_weights.json: pkgutil no
+                # siempre puede leer del zip real del plugin instalado.
+                try:
+                    from calibre.customize.ui import find_plugin
+                    plugin = find_plugin('Book Classifier')
+                    if plugin is not None:
+                        data = plugin.load_resources(['images/icon.png']).get('images/icon.png')
+                except Exception:
+                    data = None
             if data:
                 pixmap = QPixmap()
                 if pixmap.loadFromData(data, 'PNG'):

@@ -26,7 +26,8 @@ import unicodedata
 
 
 def _load_json(name):
-    """Carga un JSON: 1) carpeta config de Calibre  2) paquete  3) fichero local."""
+    """Carga un JSON: 1) carpeta config de Calibre  2) paquete  3) zip del
+    plugin instalado (fiable en Calibre real)  4) fichero local (pruebas)."""
     # 1) carpeta de configuración del usuario
     try:
         from calibre.utils.config import config_dir
@@ -36,7 +37,7 @@ def _load_json(name):
                 return json.load(f)
     except Exception:
         pass
-    # 2) datos empaquetados con el plugin
+    # 2) datos empaquetados con el plugin (pkgutil; no siempre funciona)
     try:
         pkg = __package__ or 'calibre_plugins.book_classifier'
         data = pkgutil.get_data(pkg, name)
@@ -44,7 +45,22 @@ def _load_json(name):
             return json.loads(data.decode('utf-8'))
     except Exception:
         pass
-    # 3) fichero junto a este módulo (modo prueba fuera de Calibre)
+    # 3) leer directamente del ZIP instalado del plugin. Calibre carga los
+    # plugins con un loader propio cuyo __file__ apunta DENTRO del zip (no es
+    # una ruta real de disco), así que pkgutil.get_data y open() normal pueden
+    # fallar con FileNotFoundError. plugin.load_resources() es el método
+    # oficial de calibre para leer ficheros empaquetados en el zip del propio
+    # plugin, y funciona siempre independientemente del loader interno.
+    try:
+        from calibre.customize.ui import find_plugin
+        plugin = find_plugin('Book Classifier')
+        if plugin is not None:
+            data = plugin.load_resources([name]).get(name)
+            if data:
+                return json.loads(data.decode('utf-8'))
+    except Exception:
+        pass
+    # 4) fichero junto a este módulo (modo prueba fuera de Calibre)
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, name), 'r', encoding='utf-8') as f:
         return json.load(f)

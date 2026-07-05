@@ -5,7 +5,7 @@ Configuración del plugin (clasificación con IA local).
 
 from qt.core import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-    QCheckBox, QGroupBox, QLineEdit, QScrollArea
+    QCheckBox, QGroupBox, QLineEdit, QScrollArea, QPushButton, QMessageBox
 )
 from calibre.utils.config import JSONConfig, config_dir
 
@@ -37,6 +37,13 @@ prefs.defaults['ml_universe_field']    = '#universe'
 # Consenso por autor (tercer nivel, para los dudosos)
 prefs.defaults['ml_author_fallback']  = True
 prefs.defaults['ml_author_dominance'] = 0.6
+# Rescate con IA en la nube (capa híbrida, opcional)
+prefs.defaults['llm_provider']    = 'glm'
+prefs.defaults['llm_api_key']     = ''
+prefs.defaults['llm_model']       = ''
+prefs.defaults['llm_batch']       = 10
+prefs.defaults['llm_min_conf']    = 0.55
+prefs.defaults['llm_write_temas'] = True
 
 
 class ConfigWidget(QWidget):
@@ -92,7 +99,7 @@ class ConfigWidget(QWidget):
         row_lib = QHBoxLayout()
         row_lib.addWidget(QLabel('Campo de la librería:'))
         self.combo_ml_libfield = QComboBox()
-        self.combo_ml_libfield.addItems(['tags', '#libreria', '#genre'])
+        self.combo_ml_libfield.addItems(['tags', '#biblioteca', '#genre'])
         self.combo_ml_libfield.setEditable(True)
         row_lib.addWidget(self.combo_ml_libfield)
         dl.addLayout(row_lib)
@@ -123,7 +130,7 @@ class ConfigWidget(QWidget):
         row_u = QHBoxLayout()
         row_u.addWidget(QLabel('Columna de universo:'))
         self.txt_universe = QLineEdit()
-        self.txt_universe.setPlaceholderText('#universe')
+        self.txt_universe.setPlaceholderText('#world')
         row_u.addWidget(self.txt_universe)
         gl.addLayout(row_u)
         gl.addWidget(QLabel('<small>Manda el universo; si está vacío, agrupa por serie. '
@@ -139,12 +146,76 @@ class ConfigWidget(QWidget):
         gl.addLayout(row_a)
         layout.addWidget(grp_grp)
 
+        # --- Rescate con IA en la nube (capa híbrida, opcional) ---
+        grp_llm = QGroupBox('Rescate con IA en la nube (opcional, para los "(revisar)")')
+        ll = QVBoxLayout(grp_llm)
+        ll.addWidget(QLabel(
+            '<small>Solo se usa con el menu <b>"Rescatar con IA..."</b>. Manda los '
+            'libros no clasificados a un LLM (GLM, DeepSeek...). Requiere clave y '
+            'conexion; el resto del plugin sigue funcionando sin internet. La clave '
+            'se guarda en la config local del plugin.</small>'))
+
+        row_prov = QHBoxLayout()
+        row_prov.addWidget(QLabel('Proveedor:'))
+        self.combo_llm_provider = QComboBox()
+        self.combo_llm_provider.addItems(
+            ['glm', 'deepseek', 'openai', 'google', 'kimi', 'qwen', 'anthropic', 'local'])
+        row_prov.addWidget(self.combo_llm_provider)
+        ll.addLayout(row_prov)
+
+        row_key = QHBoxLayout()
+        row_key.addWidget(QLabel('Clave API:'))
+        self.txt_llm_key = QLineEdit()
+        self.txt_llm_key.setEchoMode(QLineEdit.EchoMode.Password)
+        row_key.addWidget(self.txt_llm_key)
+        ll.addLayout(row_key)
+
+        row_mod = QHBoxLayout()
+        row_mod.addWidget(QLabel('Modelo (vacio = por defecto del proveedor):'))
+        self.txt_llm_model = QLineEdit()
+        self.txt_llm_model.setPlaceholderText('glm-4.5-flash')
+        row_mod.addWidget(self.txt_llm_model)
+        ll.addLayout(row_mod)
+
+        row_bt = QHBoxLayout()
+        row_bt.addWidget(QLabel('Libros por llamada:'))
+        self.txt_llm_batch = QLineEdit()
+        self.txt_llm_batch.setPlaceholderText('10')
+        row_bt.addWidget(self.txt_llm_batch)
+        row_bt.addWidget(QLabel('Confianza minima:'))
+        self.txt_llm_minconf = QLineEdit()
+        self.txt_llm_minconf.setPlaceholderText('0.55')
+        row_bt.addWidget(self.txt_llm_minconf)
+        ll.addLayout(row_bt)
+
+        self.chk_llm_temas = QCheckBox('Escribir tambien los temas detectados por la IA')
+        ll.addWidget(self.chk_llm_temas)
+
+        self.btn_llm_test = QPushButton('Probar conexion')
+        self.btn_llm_test.clicked.connect(self._test_llm)
+        ll.addWidget(self.btn_llm_test)
+        layout.addWidget(grp_llm)
+
         info = QLabel(
             "<small>El modelo (<b>model_weights.json</b>) y las reglas de tema "
             "(<b>mood_rules.json</b>) se cargan del plugin, o de la carpeta de "
             f"configuración de Calibre si los pones ahí:<br><b>{config_dir}</b></small>")
         info.setWordWrap(True)
         layout.addWidget(info)
+
+    def _test_llm(self):
+        provider = self.combo_llm_provider.currentText().strip() or 'glm'
+        key = self.txt_llm_key.text().strip()
+        model = self.txt_llm_model.text().strip() or None
+        try:
+            from calibre_plugins.book_classifier import llm_rescue_engine as eng
+            ok, msg = eng.test_connection(provider, key, model=model)
+        except Exception as e:
+            ok, msg = False, str(e)
+        if ok:
+            QMessageBox.information(self, 'Conexion IA', 'Funciona. Respuesta: ' + (msg or 'OK'))
+        else:
+            QMessageBox.warning(self, 'Conexion IA', 'Fallo:\n' + msg)
 
     def _load_values(self):
         active = prefs['source_fields']
@@ -163,6 +234,12 @@ class ConfigWidget(QWidget):
         self.txt_universe.setText(prefs['ml_universe_field'])
         self.chk_author.setChecked(prefs['ml_author_fallback'])
         self.txt_author_dom.setText(str(prefs['ml_author_dominance']))
+        self.combo_llm_provider.setCurrentText(prefs['llm_provider'])
+        self.txt_llm_key.setText(prefs['llm_api_key'])
+        self.txt_llm_model.setText(prefs['llm_model'])
+        self.txt_llm_batch.setText(str(prefs['llm_batch']))
+        self.txt_llm_minconf.setText(str(prefs['llm_min_conf']))
+        self.chk_llm_temas.setChecked(prefs['llm_write_temas'])
 
     def save_settings(self):
         prefs['source_fields'] = [k for k, c in self._source_checks.items() if c.isChecked()]
@@ -185,6 +262,18 @@ class ConfigWidget(QWidget):
             prefs['ml_author_dominance'] = max(0.0, min(1.0, float(self.txt_author_dom.text().strip() or '0.6')))
         except ValueError:
             prefs['ml_author_dominance'] = 0.6
+        prefs['llm_provider'] = self.combo_llm_provider.currentText().strip() or 'glm'
+        prefs['llm_api_key']  = self.txt_llm_key.text().strip()
+        prefs['llm_model']    = self.txt_llm_model.text().strip()
+        try:
+            prefs['llm_batch'] = max(1, min(50, int(self.txt_llm_batch.text().strip() or '10')))
+        except ValueError:
+            prefs['llm_batch'] = 10
+        try:
+            prefs['llm_min_conf'] = max(0.0, min(1.0, float(self.txt_llm_minconf.text().strip() or '0.55')))
+        except ValueError:
+            prefs['llm_min_conf'] = 0.55
+        prefs['llm_write_temas'] = self.chk_llm_temas.isChecked()
 
 
 def show_config_dialog(gui):

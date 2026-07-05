@@ -9,10 +9,10 @@ from calibre.customize import InterfaceActionBase
 
 class BookClassifierPlugin(InterfaceActionBase):
     name                    = 'Book Classifier'
-    description             = 'Clasifica libros con un modelo de IA local: sugiere librería y añade tags de tema (tono/tropos)'
+    description             = 'Clasifica libros con IA local (librería + tropos) y rescata los no clasificados con un LLM en la nube (opcional)'
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Yolanda Braojos'
-    version                 = (3, 0, 0)
+    version                 = (3, 1, 0)
     minimum_calibre_version = (5, 0, 0)
 
     actual_plugin = 'calibre_plugins.book_classifier.action:BookClassifierAction'

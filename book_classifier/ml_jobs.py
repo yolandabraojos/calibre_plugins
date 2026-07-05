@@ -230,23 +230,38 @@ class MLClassifyWorker(QObject):
                 if gkey is not None and unify_moods and gkey in group_moods:
                     moods = group_moods[gkey]
 
+                # El prefijo ('Biblioteca: ', 'Tema: ') solo tiene sentido si el
+                # campo destino es 'tags' (compartido con otras etiquetas): ahí
+                # hace falta para distinguir lo que escribió el plugin. Si el
+                # campo es una columna dedicada (p.ej. #biblioteca), el valor
+                # se guarda limpio, sin el literal delante.
+                lib_prefix_eff  = lib_prefix if lib_field == 'tags' else ''
+                mood_prefix_eff = mood_prefix if mood_field == 'tags' else ''
+
                 if library is None:
-                    lib_value = lib_prefix + '(sin datos)'
+                    lib_value = lib_prefix_eff + '(sin datos)'
                 elif uncertain:
-                    lib_value = lib_prefix + '(revisar)'
+                    lib_value = lib_prefix_eff + library + ' [REVISAR]'
                 else:
-                    lib_value = lib_prefix + library
+                    lib_value = lib_prefix_eff + library
 
                 new_by_field = {}
                 if write_lib:
                     new_by_field.setdefault(lib_field, []).append(lib_value)
                 if write_mood and moods:
-                    new_by_field.setdefault(mood_field, []).extend(mood_prefix + m for m in moods)
+                    new_by_field.setdefault(mood_field, []).extend(mood_prefix_eff + m for m in moods)
 
                 for field, newvals in new_by_field.items():
                     prev = list(pb['tags']) if field == 'tags' else db.field_for(field, bid)
-                    merged = _merge_prefixed(newvals, prev, field,
-                                             [lib_prefix, mood_prefix], overwrite)
+                    # Prefijos "propios" de este campo: si librería y temas
+                    # van a columnas distintas, cada fusión solo debe tocar
+                    # los valores que le corresponden a ELLA, no a la otra.
+                    own_prefixes = []
+                    if write_lib and field == lib_field:
+                        own_prefixes.append(lib_prefix_eff)
+                    if write_mood and field == mood_field:
+                        own_prefixes.append(mood_prefix_eff)
+                    merged = _merge_prefixed(newvals, prev, field, own_prefixes, overwrite)
                     writes.setdefault(field, {})[bid] = merged
 
                 key = library if (library and not uncertain) else '(revisar/sin datos)'
@@ -304,8 +319,10 @@ def _merge_prefixed(new_values, existing, field, prefixes, overwrite):
 
 def apply_ml_writes(gui, writes_by_field):
     """Aplica los cambios acumulados por campo a la base de datos."""
+    from calibre.gui2 import error_dialog
     db = gui.current_db.new_api
     touched = set()
+    failed_fields = []
     for field, id_map in writes_by_field.items():
         if not id_map:
             continue
@@ -321,10 +338,18 @@ def apply_ml_writes(gui, writes_by_field):
         try:
             db.set_field(field, norm)
             touched.update(norm.keys())
-        except Exception:
+        except Exception as e:
             traceback.print_exc()
+            failed_fields.append((field, str(e)))
     if touched:
         try:
             gui.library_view.model().refresh_ids(list(touched))
         except Exception:
             pass
+    if failed_fields:
+        detail = '\n'.join('  - {}: {}'.format(f, e) for f, e in failed_fields)
+        error_dialog(
+            gui, 'Error al guardar la clasificación',
+            'No se pudo escribir en uno o más campos (¿la columna no existe en '
+            'esta biblioteca?):\n\n{}'.format(detail),
+            show=True)
