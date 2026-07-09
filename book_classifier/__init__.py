@@ -12,7 +12,7 @@ class BookClassifierPlugin(InterfaceActionBase):
     description             = 'Clasifica libros con IA local (librería + tropos) y rescata los no clasificados con un LLM en la nube (opcional)'
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Yolanda Braojos'
-    version                 = (3, 1, 0)
+    version                 = (3, 2, 5)
     minimum_calibre_version = (5, 0, 0)
 
     actual_plugin = 'calibre_plugins.book_classifier.action:BookClassifierAction'

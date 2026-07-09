@@ -11,6 +11,7 @@ Se usa desde el worker (llm_jobs.py). No importa nada de Qt ni de Calibre.
 from __future__ import unicode_literals, division, absolute_import, print_function
 
 import json
+import time
 
 try:
     import urllib.request as _rq
@@ -81,9 +82,16 @@ def build_batch_prompt(items, temas_vocab=None, librerias=None):
         "1. Si conoces el libro por título+autor, úsalo aunque falte sinopsis.\n"
         "2. No-ficción, ensayo, biografía o divulgación → 'No-Ficción'.\n"
         "3. Fantasía y Ciencia Ficción son distintas: magia/mundos secundarios "
-        "vs tecnología/futuro/espacio. Si mezcla romance central + "
-        "fantasía/paranormal, usa 'Romantasy / Paranormal'.\n"
-        "4. Si de verdad NO tienes base, libreria='" + REVISAR + "'. No inventes.\n\n"
+        "vs tecnología/futuro/espacio.\n"
+        "4. 'Romantasy / Paranormal' es el cajon del romance especulativo con el "
+        "amor como EJE CENTRAL, sea fantasia, paranormal (vampiros, lobos, brujas) "
+        "o ciencia ficcion (romance alienigena, space romance). Usalo SOLO si la "
+        "historia de amor es el motor de la trama: NO basta con que haya romance, "
+        "escenas picantes, ni con que la autora publique romance. Si el mundo, la "
+        "magia, la aventura, la tecnologia o la intriga pesan igual o mas, o si "
+        "dudas, elige 'Fantasía' o 'Ciencia Ficción'. En empate gana el genero "
+        "(Fantasía / Ciencia Ficción), no el romance.\n"
+        "5. Si de verdad NO tienes base, libreria='" + REVISAR + "'. No inventes.\n\n"
         "LIBROS:\n" + "\n\n".join(libros) + "\n\n"
         "Devuelve un array JSON, un objeto por libro EN ORDEN:\n"
         '[{"n": 1, "libreria": "<lista o (revisar)>", "confianza": <0.0-1.0>, '
@@ -91,8 +99,15 @@ def build_batch_prompt(items, temas_vocab=None, librerias=None):
     )
 
 
-def _http_post(url, payload, headers, timeout=120):
-    req = _rq.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
+class _RateLimited(RuntimeError):
+    """429: limite de peticiones. Lleva los segundos sugeridos (Retry-After)."""
+    def __init__(self, msg, retry_after=None):
+        RuntimeError.__init__(self, msg)
+        self.retry_after = retry_after
+
+
+def _post_urllib(url, body, headers, timeout):
+    req = _rq.Request(url, data=body, headers=headers)
     try:
         resp = _rq.urlopen(req, timeout=timeout)
         try:
@@ -101,13 +116,52 @@ def _http_post(url, payload, headers, timeout=120):
             resp.close()
     except _er.HTTPError as e:
         try:
-            body = e.read().decode("utf-8", "replace")[:500]
+            body_txt = e.read().decode("utf-8", "replace")[:500]
         except Exception:
-            body = ""
-        raise RuntimeError("HTTP %s: %s" % (e.code, body))
+            body_txt = ""
+        if e.code == 429:
+            ra = None
+            try:
+                ra = e.headers.get("Retry-After")
+                ra = int(float(ra)) if ra is not None else None
+            except Exception:
+                ra = None
+            raise _RateLimited("HTTP 429: %s" % body_txt, retry_after=ra)
+        raise RuntimeError("HTTP %s: %s" % (e.code, body_txt))
 
 
-def _call_openai(prompt, model, key, base):
+def _http_post(url, payload, headers, timeout=90, retries=5):
+    """POST JSON con urllib y reintento automatico:
+      - 429 (limite de peticiones): espera PACIENTE y reintenta hasta `retries`
+        veces, respetando la cabecera Retry-After si viene; si no, 10,20,30... s
+        (tope 60). El tier gratis de GLM limita por minuto, asi que hay que
+        esperar de verdad, no unos segundos.
+      - timeout / fallo de red: reintenta con espera corta creciente.
+    Solo urllib (el navegador de Calibre mandaba un content-type erroneo)."""
+    body = json.dumps(payload).encode("utf-8")
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            return _post_urllib(url, body, headers, timeout)
+        except _RateLimited as e:
+            last = e
+            if attempt < retries:
+                wait = e.retry_after if e.retry_after else min(60, 10 * (attempt + 1))
+                time.sleep(wait)
+                continue
+            raise RuntimeError(str(e))
+        except RuntimeError:
+            raise                    # otro error HTTP con cuerpo -> arriba
+        except Exception as e:       # timeout / conexion -> reintentar
+            last = e
+            if attempt < retries:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise RuntimeError("red: %s" % e)
+    raise RuntimeError("red: %s" % last)
+
+
+def _call_openai(prompt, model, key, base, timeout=90):
     headers = {"content-type": "application/json"}
     if key:
         headers["authorization"] = "Bearer " + key
@@ -115,19 +169,19 @@ def _call_openai(prompt, model, key, base):
                       {"model": model, "temperature": 0,
                        "messages": [{"role": "system", "content": SYSTEM},
                                     {"role": "user", "content": prompt}]},
-                      headers)
+                      headers, timeout=timeout)
     if "choices" not in data:
         raise RuntimeError("respuesta inesperada (sin 'choices'): %s"
                            % json.dumps(data)[:400])
     return data["choices"][0]["message"]["content"]
 
 
-def _call_anthropic(prompt, model, key, base):
+def _call_anthropic(prompt, model, key, base, timeout=90):
     data = _http_post(base.rstrip("/") + "/v1/messages",
                       {"model": model, "max_tokens": 2000, "system": SYSTEM,
                        "messages": [{"role": "user", "content": prompt}]},
                       {"content-type": "application/json", "x-api-key": key or "",
-                       "anthropic-version": "2023-06-01"})
+                       "anthropic-version": "2023-06-01"}, timeout=timeout)
     if "content" not in data:
         raise RuntimeError("respuesta inesperada: %s" % json.dumps(data)[:400])
     return data["content"][0]["text"]
@@ -208,7 +262,7 @@ def test_connection(provider, key, model=None, base=None):
     try:
         fn, default_model, default_base = _dispatch(provider)
         txt = fn("Responde solo con el texto: OK",
-                 model or default_model, key, base or default_base)
+                 model or default_model, key, base or default_base, timeout=25)
         return True, (txt or "").strip()[:80]
     except Exception as e:
         return False, str(e)

@@ -116,6 +116,7 @@ class ConfigWidget(QWidget):
         row_th.addWidget(QLabel('Confianza mínima (0–1), si no → "(revisar)":'))
         self.txt_ml_threshold = QLineEdit()
         self.txt_ml_threshold.setPlaceholderText('0.55')
+        self.txt_ml_threshold.setMaximumWidth(90)
         row_th.addWidget(self.txt_ml_threshold)
         dl.addLayout(row_th)
         layout.addWidget(grp_dst)
@@ -142,6 +143,7 @@ class ConfigWidget(QWidget):
         row_a.addWidget(QLabel('Mayoría mínima del autor (0–1):'))
         self.txt_author_dom = QLineEdit()
         self.txt_author_dom.setPlaceholderText('0.6')
+        self.txt_author_dom.setMaximumWidth(70)
         row_a.addWidget(self.txt_author_dom)
         gl.addLayout(row_a)
         layout.addWidget(grp_grp)
@@ -149,11 +151,13 @@ class ConfigWidget(QWidget):
         # --- Rescate con IA en la nube (capa híbrida, opcional) ---
         grp_llm = QGroupBox('Rescate con IA en la nube (opcional, para los "(revisar)")')
         ll = QVBoxLayout(grp_llm)
-        ll.addWidget(QLabel(
+        lbl_llm_info = QLabel(
             '<small>Solo se usa con el menu <b>"Rescatar con IA..."</b>. Manda los '
             'libros no clasificados a un LLM (GLM, DeepSeek...). Requiere clave y '
             'conexion; el resto del plugin sigue funcionando sin internet. La clave '
-            'se guarda en la config local del plugin.</small>'))
+            'se guarda en la config local del plugin.</small>')
+        lbl_llm_info.setWordWrap(True)
+        ll.addWidget(lbl_llm_info)
 
         row_prov = QHBoxLayout()
         row_prov.addWidget(QLabel('Proveedor:'))
@@ -174,6 +178,7 @@ class ConfigWidget(QWidget):
         row_mod.addWidget(QLabel('Modelo (vacio = por defecto del proveedor):'))
         self.txt_llm_model = QLineEdit()
         self.txt_llm_model.setPlaceholderText('glm-4.5-flash')
+        self.txt_llm_model.setMaximumWidth(240)
         row_mod.addWidget(self.txt_llm_model)
         ll.addLayout(row_mod)
 
@@ -181,10 +186,12 @@ class ConfigWidget(QWidget):
         row_bt.addWidget(QLabel('Libros por llamada:'))
         self.txt_llm_batch = QLineEdit()
         self.txt_llm_batch.setPlaceholderText('10')
+        self.txt_llm_batch.setMaximumWidth(70)
         row_bt.addWidget(self.txt_llm_batch)
         row_bt.addWidget(QLabel('Confianza minima:'))
         self.txt_llm_minconf = QLineEdit()
         self.txt_llm_minconf.setPlaceholderText('0.55')
+        self.txt_llm_minconf.setMaximumWidth(70)
         row_bt.addWidget(self.txt_llm_minconf)
         ll.addLayout(row_bt)
 
@@ -280,6 +287,7 @@ def show_config_dialog(gui):
     from qt.core import QDialog, QVBoxLayout, QDialogButtonBox
     dialog = QDialog(gui)
     dialog.setWindowTitle('Configurar Book Classifier (IA)')
+    dialog.resize(560, 640)
     layout = QVBoxLayout(dialog)
     widget = ConfigWidget()
     layout.addWidget(widget)

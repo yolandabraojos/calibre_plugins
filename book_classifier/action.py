@@ -11,7 +11,7 @@ from qt.core import QIcon, QMenu, QAction, QPixmap, QProgressDialog, Qt, QFontMe
 
 from calibre_plugins.book_classifier.config import prefs
 from calibre_plugins.book_classifier.ml_jobs import start_ml_classify_threaded, apply_ml_writes
-from calibre_plugins.book_classifier.llm_jobs import start_llm_rescue_threaded
+from calibre_plugins.book_classifier.llm_jobs import run_rescue_task
 
 try:
     from calibre_plugins.book_classifier import get_icons
@@ -48,6 +48,10 @@ class BookClassifierAction(InterfaceAction):
         act_llm_all = QAction('Rescatar con IA los no clasificados (toda la biblioteca)', self.gui)
         act_llm_all.triggered.connect(lambda: self._method_llm_rescue(all_books=True))
         menu.addAction(act_llm_all)
+
+        act_llm_reeval = QAction('Reevaluar con IA la seleccion (ignora marcas)', self.gui)
+        act_llm_reeval.triggered.connect(lambda: self._method_llm_rescue(all_books=False, force=True))
+        menu.addAction(act_llm_reeval)
 
         menu.addSeparator()
 
@@ -250,13 +254,13 @@ class BookClassifierAction(InterfaceAction):
 
     # ─── Rescate con IA (capa hibrida LLM) ────────────────────────────────────
 
-    def _method_llm_rescue(self, all_books=False):
+    def _method_llm_rescue(self, all_books=False, force=False):
         book_ids = self._resolve_book_ids(all_books)
         if book_ids is None:
             return
-        self._run_llm_rescue(book_ids)
+        self._run_llm_rescue(book_ids, force=force)
 
-    def _run_llm_rescue(self, book_ids):
+    def _run_llm_rescue(self, book_ids, force=False):
         try:
             provider = prefs.get('llm_provider', 'glm')
             key = (prefs.get('llm_api_key') or '').strip()
@@ -278,31 +282,38 @@ class BookClassifierAction(InterfaceAction):
                 'llm_batch':      prefs.get('llm_batch', 10),
                 'llm_min_conf':   prefs.get('llm_min_conf', 0.55),
                 'llm_write_temas': prefs.get('llm_write_temas', True),
+                'force_all':       force,
             }
-            worker, thread = start_llm_rescue_threaded(self.gui, book_ids, settings)
-
-            self._progress_dialog = QProgressDialog(
-                'Rescatando con IA...', 'Cancelar', 0, len(book_ids), self.gui)
-            self._progress_dialog.setWindowTitle('Rescate con IA')
-            self._progress_dialog.setWindowModality(Qt.WindowModal)
-            self._progress_dialog.setMinimumDuration(0)
-            self._progress_dialog.setValue(0)
-            self._progress_dialog.canceled.connect(worker.cancel)
-
-            worker.progress.connect(self._update_progress)
-            worker.finished.connect(self._finish_progress)
-            worker.finished.connect(self._llm_job_finished)
-            thread.finished.connect(self._clear_thread)
-
-            self._active_worker = worker
-            self._active_thread = thread
-            thread.start()
+            from calibre.gui2.threaded_jobs import ThreadedJob
+            desc = '{} con IA de {} libros'.format(
+                'Reevaluacion' if force else 'Rescate', len(book_ids))
+            job = ThreadedJob(
+                'book_classifier_llm_rescue', desc, run_rescue_task,
+                (self.gui, book_ids, settings), {}, self._llm_job_done)
+            self.gui.job_manager.run_threaded_job(job)
+            try:
+                self.gui.status_bar.show_message(
+                    'Rescate con IA lanzado. Miralo en la lista de tareas '
+                    '(abajo a la derecha); puedes seguir usando Calibre.', 6000)
+            except Exception:
+                pass
         except Exception:
             print("DEBUG ERROR: Fallo al lanzar el rescate IA")
             traceback.print_exc()
 
-    def _llm_job_finished(self, result):
+    def _llm_job_done(self, job):
         try:
+            if getattr(job, 'failed', False):
+                try:
+                    return self.gui.job_exception(
+                        job, dialog_title='Error en el rescate con IA')
+                except Exception:
+                    error_dialog(
+                        self.gui, 'Rescate con IA',
+                        'La tarea fallo:\n{}'.format(getattr(job, 'exception', '')),
+                        det_msg=getattr(job, 'traceback', '') or '', show=True)
+                    return
+            result = getattr(job, 'result', None)
             if not isinstance(result, dict):
                 error_dialog(self.gui, 'Error', 'Resultado de rescate inesperado.', show=True)
                 return
@@ -314,36 +325,75 @@ class BookClassifierAction(InterfaceAction):
                 apply_ml_writes(self.gui, result['writes_by_field'])
             self._show_llm_results(result)
         except Exception:
-            print("DEBUG ERROR en _llm_job_finished:")
+            print("DEBUG ERROR en _llm_job_done:")
             traceback.print_exc()
 
     def _show_llm_results(self, stats):
         try:
-            from qt.core import QDialog, QVBoxLayout, QDialogButtonBox, QLabel, QTextEdit
+            from qt.core import (QDialog, QVBoxLayout, QDialogButtonBox, QLabel,
+                                 QTextEdit, Qt)
+
+            candidates = stats.get('candidates', 0)
+            details = stats.get('book_details', [])
+
             dialog = QDialog(self.gui)
             dialog.setWindowTitle('Resultados del rescate con IA')
-            dialog.resize(620, 520)
             layout = QVBoxLayout(dialog)
+
+            # Sin candidatos: mensaje breve y claro
+            if candidates == 0 and not stats.get('cancelled'):
+                dialog.resize(470, 210)
+                msg = QLabel(
+                    'No se encontraron libros sin clasificar entre los {} '
+                    'revisados.\n\nEl rescate con IA solo actua sobre los libros '
+                    'marcados como "[REVISAR]" o "(sin datos)". Clasifica primero '
+                    'en local; el rescate se ocupa despues de los dudosos.'.format(
+                        stats.get('total', 0)))
+                msg.setWordWrap(True)
+                msg.setAlignment(Qt.AlignmentFlag.AlignTop)
+                layout.addWidget(msg)
+                diag = QLabel(
+                    'Diagnostico -> campo de libreria leido: "{}"  |  '
+                    'libros con valor en ese campo: {}/{}\nEjemplos vistos: {}'.format(
+                        stats.get('lib_field', '?'), stats.get('with_value', 0),
+                        stats.get('total', 0),
+                        '  //  '.join(stats.get('sample', [])) or '(ninguno)'))
+                diag.setWordWrap(True)
+                diag.setAlignment(Qt.AlignmentFlag.AlignTop)
+                layout.addWidget(diag)
+                dialog.resize(560, 300)
+                btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+                btns.accepted.connect(dialog.accept)
+                layout.addWidget(btns)
+                dialog.exec()
+                return
 
             lines = []
             if stats.get('cancelled'):
                 lines.append('Cancelado por el usuario.')
             lines += [
+                'Proveedor: {}   modelo: {}'.format(
+                    stats.get('provider', '?'), stats.get('model_used', '?')),
+                'Servidor:  {}'.format(stats.get('base_used', '?')),
+                '',
                 'Libros revisados:         {}'.format(stats.get('total', 0)),
-                'No clasificados hallados: {}'.format(stats.get('candidates', 0)),
+                'No clasificados hallados: {}'.format(candidates),
                 'Rescatados por la IA:     {}'.format(stats.get('rescued', 0)),
                 'Errores:                  {}'.format(stats.get('errors', 0)),
             ]
             if stats.get('first_error'):
-                lines.append('Primer error: {}'.format(str(stats['first_error'])[:200]))
-            lines += ['', 'Reparto por libreria (IA):']
+                lines += ['', 'Primer error: {}'.format(str(stats['first_error'])[:200])]
             dist = stats.get('dist', {})
-            for name in sorted(dist, key=lambda k: -dist[k]):
-                lines.append('   {:<28} {}'.format(name, dist[name]))
-            layout.addWidget(QLabel('\n'.join(lines)))
+            if dist:
+                lines += ['', 'Reparto por libreria (IA):']
+                for name in sorted(dist, key=lambda k: -dist[k]):
+                    lines.append('   {:<28} {}'.format(name, dist[name]))
+            lbl = QLabel('\n'.join(lines))
+            lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+            layout.addWidget(lbl)
 
-            details = stats.get('book_details', [])
             if details:
+                dialog.resize(620, 520)
                 txt = QTextEdit()
                 txt.setReadOnly(True)
                 body = []
@@ -354,6 +404,9 @@ class BookClassifierAction(InterfaceAction):
                         body.append('      tema: {}'.format(', '.join(d['moods'])))
                 txt.setPlainText('\n'.join(body))
                 layout.addWidget(txt)
+            else:
+                dialog.resize(470, 320)
+                layout.addStretch(1)
 
             btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
             btns.accepted.connect(dialog.accept)
