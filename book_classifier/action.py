@@ -6,7 +6,7 @@ __license__ = 'GPL v3'
 import pkgutil
 import traceback
 from calibre.gui2.actions import InterfaceAction
-from calibre.gui2 import error_dialog, question_dialog
+from calibre.gui2 import Dispatcher, error_dialog, question_dialog
 from qt.core import QIcon, QMenu, QAction, QPixmap, QProgressDialog, Qt, QFontMetrics
 
 from calibre_plugins.book_classifier.config import prefs
@@ -260,6 +260,49 @@ class BookClassifierAction(InterfaceAction):
             return
         self._run_llm_rescue(book_ids, force=force)
 
+    def _prefetch_books(self, book_ids, settings):
+        """Lee los datos de los libros en el hilo de la GUI (el job NO debe tocar
+        la base de datos: hacerlo crashea Calibre con errores de hilo Qt)."""
+        db = self.gui.current_db.new_api
+        lib_field  = settings.get('library_field', 'tags')
+        mood_field = settings.get('mood_field', 'tags')
+        lib_prefix = settings.get('library_prefix', 'Biblioteca: ')
+        lib_prefix_eff = lib_prefix if lib_field == 'tags' else ''
+        books = []
+        for bid in book_ids:
+            try:
+                tags = list(db.field_for('tags', bid) or [])
+                title = db.field_for('title', bid) or 'Sin titulo'
+                authors = list(db.field_for('authors', bid) or [])
+                comments = db.field_for('comments', bid) or ''
+            except Exception:
+                continue
+            if lib_field == 'tags':
+                lib_value = None
+                for t in tags:
+                    if str(t).startswith(lib_prefix_eff):
+                        lib_value = str(t)
+                        break
+            else:
+                try:
+                    lib_value = db.field_for(lib_field, bid)
+                except Exception:
+                    lib_value = None
+
+            def _fval(field, _tags=tags, _bid=bid):
+                if field == 'tags':
+                    return list(_tags)
+                try:
+                    return db.field_for(field, _bid)
+                except Exception:
+                    return None
+
+            prev = {lib_field: _fval(lib_field), mood_field: _fval(mood_field)}
+            books.append({'id': bid, 'title': title, 'authors': authors,
+                          'comments': comments, 'tags': tags,
+                          'lib_value': lib_value, 'prev': prev})
+        return books
+
     def _run_llm_rescue(self, book_ids, force=False):
         try:
             provider = prefs.get('llm_provider', 'glm')
@@ -284,12 +327,13 @@ class BookClassifierAction(InterfaceAction):
                 'llm_write_temas': prefs.get('llm_write_temas', True),
                 'force_all':       force,
             }
+            books = self._prefetch_books(book_ids, settings)
             from calibre.gui2.threaded_jobs import ThreadedJob
             desc = '{} con IA de {} libros'.format(
-                'Reevaluacion' if force else 'Rescate', len(book_ids))
+                'Reevaluacion' if force else 'Rescate', len(books))
             job = ThreadedJob(
                 'book_classifier_llm_rescue', desc, run_rescue_task,
-                (self.gui, book_ids, settings), {}, self._llm_job_done)
+                (books, settings), {}, Dispatcher(self._llm_job_done))
             self.gui.job_manager.run_threaded_job(job)
             try:
                 self.gui.status_bar.show_message(

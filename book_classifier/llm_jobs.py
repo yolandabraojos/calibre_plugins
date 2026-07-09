@@ -2,14 +2,15 @@
 """
 Rescate con IA en la nube como TAREA DE CALIBRE (ThreadedJob).
 
-Corre en el gestor de tareas de Calibre: aparece en la lista de trabajos
-(abajo a la derecha), se puede cancelar desde ahí y NO bloquea la interfaz —
-puedes seguir usando Calibre mientras rescata.
+IMPORTANTE (patron de all_libraries_stats/jobs.py): el job corre en un hilo del
+gestor de tareas y NO debe tocar la base de datos ni objetos Qt (hacerlo crashea
+con "Cannot set parent, new parent is in a different thread"). Por eso los datos
+de los libros se LEEN antes, en el hilo de la GUI (en action._run_llm_rescue), y
+aqui solo se hace red + calculo. Las escrituras se aplican luego en el callback.
 
-Recoge los libros que el clasificador local dejó sin resolver ('[REVISAR]' o
-'(sin datos)'), lee su sinopsis real, y los manda en lotes al LLM. Solo
-reescribe los que el LLM resuelve con confianza. Las escrituras a la base se
-aplican en el callback (hilo de GUI), no aquí.
+Recoge los libros que el clasificador local dejo sin resolver ('[REVISAR]' o
+'(sin datos)') — o TODOS si force_all — y los manda en lotes al LLM. Solo
+reescribe los que el LLM resuelve con confianza.
 """
 from __future__ import unicode_literals, division, absolute_import, print_function
 
@@ -22,23 +23,25 @@ from calibre_plugins.book_classifier.ml_jobs import _merge_prefixed
 
 
 def _is_residue(lib_value):
-    """True si el valor de librería es del plugin pero sin resolver."""
+    """True si el valor de libreria es del plugin pero sin resolver."""
     if not lib_value:
         return False
     v = str(lib_value).strip()
     return ('[REVISAR]' in v) or v.endswith('(sin datos)')
 
 
-def _do_rescue(db, book_ids, settings, progress, is_cancelled):
+def _do_rescue(books, settings, progress, is_cancelled):
     """
-    Núcleo del rescate, independiente de Qt/Calibre.
-      progress(frac_0_a_1, mensaje)   -> informar avance
-      is_cancelled() -> bool          -> ¿cancelar?
+    Nucleo del rescate. NO toca base de datos ni Qt: recibe `books`, una lista de
+    dicts YA leidos en el hilo de la GUI, cada uno con:
+      id, title, authors(list), comments(str), tags(list),
+      lib_value (valor actual de la libreria, para detectar residuo),
+      prev (dict campo_destino -> valor actual, para fundir al escribir)
     Devuelve el dict de resultado (incluye 'writes_by_field').
     """
     s = settings
     result = {
-        'total': len(book_ids), 'candidates': 0, 'rescued': 0,
+        'total': len(books), 'candidates': 0, 'rescued': 0,
         'errors': 0, 'cancelled': False, 'writes_by_field': {},
         'dist': {}, 'book_details': [], 'failed': False, 'error': '',
         'first_error': '',
@@ -50,7 +53,7 @@ def _do_rescue(db, book_ids, settings, progress, is_cancelled):
     batch_sz  = int(s.get('llm_batch', 10) or 10)
     min_conf  = float(s.get('llm_min_conf', 0.55) or 0.55)
     write_temas = s.get('llm_write_temas', True)
-    force = bool(s.get('force_all', False))
+    force     = bool(s.get('force_all', False))
 
     lib_field   = s.get('library_field', 'tags')
     mood_field  = s.get('mood_field', 'tags')
@@ -86,61 +89,40 @@ def _do_rescue(db, book_ids, settings, progress, is_cancelled):
     result['with_value'] = 0
     result['sample'] = []
 
-    # ── PASO 1: localizar el residuo y leer su texto real ─────────────────────
-    total = len(book_ids)
+    # ── PASO 1: seleccionar candidatos (datos ya leidos, sin tocar la BD) ─────
+    total = len(books)
     cand = []
-    for i, bid in enumerate(book_ids, 1):
+    for i, bk in enumerate(books, 1):
         if is_cancelled():
             result['cancelled'] = True
             break
-        try:
-            mi = db.get_proxy_metadata(bid)
-            title = mi.title or 'Sin título'
-            if i % 25 == 0 or i == total:
-                progress(0.0, 'Analizando biblioteca: {}/{}'.format(i, total))
-
-            tags = list(mi.tags) if mi.tags else []
-            if lib_field == 'tags':
-                lib_value = None
-                for t in tags:
-                    if str(t).startswith(lib_prefix_eff):
-                        lib_value = str(t)
-                        break
-            else:
-                try:
-                    lib_value = db.field_for(lib_field, bid)
-                except Exception:
-                    lib_value = None
-
-            if lib_value:
-                result['with_value'] += 1
-                if len(result['sample']) < 4:
-                    result['sample'].append(repr(lib_value)[:70])
-            if not force and not _is_residue(lib_value):
-                continue
-
-            authors = [a for a in (list(mi.authors) if mi.authors else []) if a]
-            comments = re.sub(r'<[^>]+>', ' ', mi.comments) if mi.comments else ''
-            comments = re.sub(r'\s+', ' ', comments).strip()
-            item = {
-                'titulo': title,
-                'autor': ', '.join(authors),
-                'sinopsis': comments,
-                'tags': ', '.join(str(t) for t in tags
-                                  if not str(t).startswith(lib_prefix_eff)
-                                  and not str(t).startswith(mood_prefix_eff)),
-            }
-            cand.append((bid, title, item, tags))
-        except Exception as e:
-            print('LLM RESCUE (paso 1) libro {}: {}'.format(bid, e))
-            traceback.print_exc()
-            result['errors'] += 1
+        lib_value = bk.get('lib_value')
+        if lib_value:
+            result['with_value'] += 1
+            if len(result['sample']) < 4:
+                result['sample'].append(repr(lib_value)[:70])
+        if not force and not _is_residue(lib_value):
+            continue
+        tags = bk.get('tags') or []
+        comments = re.sub(r'<[^>]+>', ' ', bk.get('comments') or '')
+        comments = re.sub(r'\s+', ' ', comments).strip()
+        item = {
+            'titulo': bk.get('title') or 'Sin titulo',
+            'autor': ', '.join(bk.get('authors') or []),
+            'sinopsis': comments,
+            'tags': ', '.join(str(t) for t in tags
+                              if not str(t).startswith(lib_prefix_eff)
+                              and not str(t).startswith(mood_prefix_eff)),
+        }
+        cand.append((bk, item))
+        if i % 50 == 0 or i == total:
+            progress(0.0, 'Analizando libros: {}/{}'.format(i, total))
 
     result['candidates'] = len(cand)
     if not cand or result['cancelled']:
         return result
 
-    # ── PASO 2: rescatar en lotes ─────────────────────────────────────────────
+    # ── PASO 2: rescatar en lotes (solo red; escrituras en memoria) ───────────
     writes = result['writes_by_field']
     nbatches = int(math.ceil(len(cand) / float(max(batch_sz, 1))))
     done = 0
@@ -149,7 +131,7 @@ def _do_rescue(db, book_ids, settings, progress, is_cancelled):
             result['cancelled'] = True
             break
         lote = cand[b:b + batch_sz]
-        items = [c[2] for c in lote]
+        items = [c[1] for c in lote]
         bi = b // batch_sz + 1
         progress(done / float(len(cand)),
                  'IA lote {}/{} ({}/{} libros) - llamando al modelo...'.format(
@@ -167,18 +149,19 @@ def _do_rescue(db, book_ids, settings, progress, is_cancelled):
             done += len(lote)
             continue
 
-        for (bid, title, item, tags), r in zip(lote, res_list):
+        for (bk, item), r in zip(lote, res_list):
             lib = r.get('libreria')
             if not lib or lib == eng.REVISAR:
                 continue
             temas = r.get('temas') or []
+            bid = bk['id']
             new_by_field = {}
             new_by_field.setdefault(lib_field, []).append(lib_prefix_eff + lib)
             if write_temas and temas:
                 new_by_field.setdefault(mood_field, []).extend(
                     mood_prefix_eff + m for m in temas)
             for field, newvals in new_by_field.items():
-                prev = list(tags) if field == 'tags' else db.field_for(field, bid)
+                prev = (bk.get('prev') or {}).get(field)
                 own_prefixes = []
                 if field == lib_field:
                     own_prefixes.append(lib_prefix_eff)
@@ -190,7 +173,7 @@ def _do_rescue(db, book_ids, settings, progress, is_cancelled):
             result['dist'][lib] = result['dist'].get(lib, 0) + 1
             if len(result['book_details']) < 400:
                 result['book_details'].append({
-                    'title': title, 'library': lib,
+                    'title': bk.get('title') or '', 'library': lib,
                     'confidence': round(float(r.get('confianza', 0)), 3),
                     'uncertain': False, 'moods': temas, 'tier': 'IA',
                 })
@@ -203,41 +186,10 @@ def _do_rescue(db, book_ids, settings, progress, is_cancelled):
     return result
 
 
-def run_rescue_job(first, *rest):
-    """Punto de entrada del ThreadedJob. Es defensivo respecto a si Calibre
-    inyecta el objeto job como primer argumento o no."""
-    if hasattr(first, 'abort') and hasattr(first, 'notifications'):
-        job = first
-        gui, book_ids, settings = rest
-    else:
-        job = None
-        gui, book_ids, settings = (first,) + tuple(rest)
-
-    def progress(frac, msg):
-        if job is None:
-            return
-        try:
-            job.notifications.put((float(max(0.0, min(1.0, frac))), msg))
-        except Exception:
-            pass
-
-    def is_cancelled():
-        if job is None:
-            return False
-        try:
-            return job.abort.is_set()
-        except Exception:
-            return False
-
-    db = gui.current_db.new_api
-    return _do_rescue(db, book_ids, settings, progress, is_cancelled)
-
-
-def run_rescue_task(gui, book_ids, settings, log=None, abort=None, notifications=None):
+def run_rescue_task(books, settings, log=None, abort=None, notifications=None):
     """Tarea para el ThreadedJob de Calibre. Calibre inyecta log/abort/
     notifications como keyword args (mismo patron que all_libraries_stats/jobs.py).
-    Corre en un hilo del gestor de tareas: no bloquea la GUI y es cancelable.
-    Las escrituras a la base se aplican en el callback (hilo de GUI)."""
+    NO toca la base de datos: `books` ya viene leido del hilo de la GUI."""
     def progress(frac, msg):
         if notifications is not None:
             try:
@@ -251,5 +203,4 @@ def run_rescue_task(gui, book_ids, settings, log=None, abort=None, notifications
         except Exception:
             return False
 
-    db = gui.current_db.new_api
-    return _do_rescue(db, book_ids, settings, progress, is_cancelled)
+    return _do_rescue(books, settings, progress, is_cancelled)
