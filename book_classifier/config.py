@@ -44,6 +44,12 @@ prefs.defaults['llm_model']       = ''
 prefs.defaults['llm_batch']       = 10
 prefs.defaults['llm_min_conf']    = 0.55
 prefs.defaults['llm_write_temas'] = True
+prefs.defaults['llm_write_reason'] = True
+prefs.defaults['llm_reason_field'] = '#motivo_ia'
+prefs.defaults['llm_write_serie'] = True
+prefs.defaults['llm_serie_field'] = '#serie_ia'
+prefs.defaults['llm_write_conf']  = True
+prefs.defaults['llm_conf_field']  = '#confianza_ia'
 
 
 class ConfigWidget(QWidget):
@@ -99,7 +105,7 @@ class ConfigWidget(QWidget):
         row_lib = QHBoxLayout()
         row_lib.addWidget(QLabel('Campo de la librería:'))
         self.combo_ml_libfield = QComboBox()
-        self.combo_ml_libfield.addItems(['tags', '#biblioteca', '#genre'])
+        self.combo_ml_libfield.addItems(['tags', '#libreria', '#biblioteca', '#genre'])
         self.combo_ml_libfield.setEditable(True)
         row_lib.addWidget(self.combo_ml_libfield)
         dl.addLayout(row_lib)
@@ -198,6 +204,46 @@ class ConfigWidget(QWidget):
         self.chk_llm_temas = QCheckBox('Escribir tambien los temas detectados por la IA')
         ll.addWidget(self.chk_llm_temas)
 
+        self.chk_llm_reason = QCheckBox('Guardar el motivo de la IA en una columna personalizada')
+        ll.addWidget(self.chk_llm_reason)
+        row_reason = QHBoxLayout()
+        row_reason.addWidget(QLabel('Columna del motivo:'))
+        self.txt_llm_reason_field = QLineEdit()
+        self.txt_llm_reason_field.setPlaceholderText('#motivo_ia')
+        row_reason.addWidget(self.txt_llm_reason_field)
+        ll.addLayout(row_reason)
+        lbl_reason_hint = QLabel(
+            '<small>Debe ser una columna personalizada de texto (largo) que crees tu '
+            'en Preferencias -> Anadir columnas personalizadas. Ahi se guarda la '
+            'explicacion breve que da el LLM para cada libro rescatado.</small>')
+        lbl_reason_hint.setWordWrap(True)
+        ll.addWidget(lbl_reason_hint)
+
+        self.chk_llm_serie = QCheckBox('Guardar la serie/saga que detecte la IA (campo aparte)')
+        ll.addWidget(self.chk_llm_serie)
+        row_serie = QHBoxLayout()
+        row_serie.addWidget(QLabel('Columna de la serie IA:'))
+        self.txt_llm_serie_field = QLineEdit()
+        self.txt_llm_serie_field.setPlaceholderText('#serie_ia')
+        row_serie.addWidget(self.txt_llm_serie_field)
+        ll.addLayout(row_serie)
+
+        self.chk_llm_conf = QCheckBox('Guardar el % de confianza de la clasificacion IA')
+        ll.addWidget(self.chk_llm_conf)
+        row_conf = QHBoxLayout()
+        row_conf.addWidget(QLabel('Columna de la confianza:'))
+        self.txt_llm_conf_field = QLineEdit()
+        self.txt_llm_conf_field.setPlaceholderText('#confianza_ia')
+        row_conf.addWidget(self.txt_llm_conf_field)
+        ll.addLayout(row_conf)
+        lbl_conf_hint = QLabel(
+            '<small>La serie va a una columna de texto (no toca la serie real de '
+            'Calibre). La confianza es un entero 0-100: crea una columna '
+            'personalizada de tipo <b>numero entero</b>. Solo se rellenan los libros '
+            'que la IA resuelve.</small>')
+        lbl_conf_hint.setWordWrap(True)
+        ll.addWidget(lbl_conf_hint)
+
         self.btn_llm_test = QPushButton('Probar conexion')
         self.btn_llm_test.clicked.connect(self._test_llm)
         ll.addWidget(self.btn_llm_test)
@@ -247,6 +293,12 @@ class ConfigWidget(QWidget):
         self.txt_llm_batch.setText(str(prefs['llm_batch']))
         self.txt_llm_minconf.setText(str(prefs['llm_min_conf']))
         self.chk_llm_temas.setChecked(prefs['llm_write_temas'])
+        self.chk_llm_reason.setChecked(prefs['llm_write_reason'])
+        self.txt_llm_reason_field.setText(prefs['llm_reason_field'])
+        self.chk_llm_serie.setChecked(prefs['llm_write_serie'])
+        self.txt_llm_serie_field.setText(prefs['llm_serie_field'])
+        self.chk_llm_conf.setChecked(prefs['llm_write_conf'])
+        self.txt_llm_conf_field.setText(prefs['llm_conf_field'])
 
     def save_settings(self):
         prefs['source_fields'] = [k for k, c in self._source_checks.items() if c.isChecked()]
@@ -281,6 +333,12 @@ class ConfigWidget(QWidget):
         except ValueError:
             prefs['llm_min_conf'] = 0.55
         prefs['llm_write_temas'] = self.chk_llm_temas.isChecked()
+        prefs['llm_write_reason'] = self.chk_llm_reason.isChecked()
+        prefs['llm_reason_field'] = self.txt_llm_reason_field.text().strip() or '#motivo_ia'
+        prefs['llm_write_serie'] = self.chk_llm_serie.isChecked()
+        prefs['llm_serie_field'] = self.txt_llm_serie_field.text().strip() or '#serie_ia'
+        prefs['llm_write_conf']  = self.chk_llm_conf.isChecked()
+        prefs['llm_conf_field']  = self.txt_llm_conf_field.text().strip() or '#confianza_ia'
 
 
 def show_config_dialog(gui):

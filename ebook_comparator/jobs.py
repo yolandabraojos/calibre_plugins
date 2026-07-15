@@ -4,6 +4,7 @@ from __future__ import unicode_literals, division, absolute_import, print_functi
 import logging
 import os
 import re
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
 
 from PyQt5.Qt import QThread, pyqtSignal
@@ -64,12 +65,17 @@ def _get_format_size(db, book_id, fmt):
 
 
 # ---------------------------------------------------------------------------
-# Normalización de título y autor para el agrupamiento (mejora de recall)
+# Comparación difusa de título y autor para el agrupamiento (mejora de recall)
 # ---------------------------------------------------------------------------
 # Exigir título+autor EXACTOS pierde duplicados con metadatos ligeramente
-# distintos ("The Hobbit" vs "Hobbit"; "Tolkien, J.R.R." vs "J.R.R. Tolkien").
-# Estas funciones canonicalizan la clave de agrupamiento sin tocar los
-# metadatos mostrados al usuario.
+# distintos ("The Hobbit" vs "Hobbit"; "Tolkien, J.R.R." vs "J.R.R. Tolkien";
+# "El Hobbit: Edición ilustrada" vs "El Hobbit"; erratas de tecleo). En vez de
+# agrupar por una clave EXACTA (título, autor, idioma), cada libro se compara
+# con sus vecinos usando SIMILITUD APROXIMADA de título y autor: dos libros
+# generan un par candidato si su título normalizado es "suficientemente
+# parecido" (SequenceMatcher) Y comparten al menos un autor "suficientemente
+# parecido" (solape de tokens). El idioma se sigue exigiendo EXACTO para no
+# mezclar traducciones que comparten título y autor.
 
 # Artículos iniciales que se eliminan del título (varios idiomas).
 _ARTICLES = {
@@ -79,9 +85,27 @@ _ARTICLES = {
 }
 
 
+# Patrón para contenido entre paréntesis o corchetes, típico de marcas de
+# edición: "(Edición ilustrada)", "[2ª ed.]", "(Anniversary Edition)".
+_PAREN_RE = re.compile(r'[\(\[][^\)\]]*[\)\]]')
+
+
 def _normalize_title(title):
-    """minúsculas, sin puntuación, sin artículo inicial, espacios colapsados."""
+    """
+    minúsculas, sin subtítulo, sin paréntesis/corchetes, sin puntuación,
+    sin artículo inicial, espacios colapsados.
+
+    El subtítulo ("Título: Edición ilustrada") y las marcas de edición entre
+    paréntesis ("Título (Edición ilustrada)") se descartan ANTES de quitar la
+    puntuación general, porque una vez convertidos los dos puntos / paréntesis
+    en espacios ya no habría forma de distinguir "es un subtítulo" de "son
+    palabras más del título".  Así "Título: Edición ilustrada" y "Título"
+    normalizan igual y se pueden emparejar por similitud difusa (ver
+    scan_pairs_sync).
+    """
     t = (title or '').lower()
+    t = _PAREN_RE.sub(' ', t)          # quita marcas de edición entre (paréntesis)/[corchetes]
+    t = t.split(':', 1)[0]             # quita subtítulo tras ':' (se queda solo con lo anterior)
     t = re.sub(r'[^\w\s]', ' ', t, flags=re.UNICODE)
     tokens = t.split()
     if tokens and tokens[0] in _ARTICLES:
@@ -89,23 +113,76 @@ def _normalize_title(title):
     return ' '.join(tokens)
 
 
-def _normalize_authors(authors):
+def _author_token_sets(authors):
     """
-    Clave canónica de autores, independiente del orden de los nombres y de la
-    forma "Apellido, Nombre" vs "Nombre Apellido".  Cada autor se reduce a sus
-    tokens alfanuméricos ordenados; el conjunto de autores también se ordena.
+    Devuelve una lista con UN conjunto de tokens por autor, independiente del
+    orden de los nombres y de la forma "Apellido, Nombre" vs "Nombre
+    Apellido". Se usa para medir solape difuso entre listas de autores (ver
+    _author_similarity): basta con que UN autor de cada lado coincida lo
+    bastante, aunque el resto de coautores difiera.
     """
     if isinstance(authors, (list, tuple)):
         items = list(authors)
     else:
         # Cadena ya unida: separar por separadores habituales de autores.
         items = re.split(r'\s*[;&]\s*|\s+y\s+|\s+and\s+', authors or '')
-    norm = []
+    sets = []
     for a in items:
-        toks = sorted(re.sub(r'[^\w\s]', ' ', (a or '').lower()).split())
+        toks = frozenset(re.sub(r'[^\w\s]', ' ', (a or '').lower()).split())
         if toks:
-            norm.append(' '.join(toks))
-    return '|'.join(sorted(set(norm)))
+            sets.append(toks)
+    return sets
+
+
+def _title_similarity(norm_title_a, norm_title_b):
+    """Similitud 0.0-1.0 entre dos títulos YA normalizados (_normalize_title)."""
+    if not norm_title_a or not norm_title_b:
+        return 0.0
+    return SequenceMatcher(None, norm_title_a, norm_title_b).ratio()
+
+
+def _author_similarity(sets_a, sets_b):
+    """
+    Máxima similitud (coeficiente de solape, no Jaccard) entre cualquier
+    autor de A y cualquier autor de B.  Solape = tokens compartidos / tokens
+    del MÁS CORTO de los dos nombres, en vez de sobre la unión: así un
+    autor con metadatos incompletos ("Tolkien") frente al nombre completo
+    ("J.R.R. Tolkien") da solape 1.0 -- con Jaccard clásico daría solo 0.33
+    (1 token compartido / 3 en la unión) y no se detectaría como el mismo
+    autor.  Un solo par de autores parecido basta para considerar que el
+    mismo autor firma ambos libros, aunque haya coautores que no coincidan.
+    """
+    if not sets_a or not sets_b:
+        return 0.0
+    best = 0.0
+    for ta in sets_a:
+        for tb in sets_b:
+            denom = min(len(ta), len(tb))
+            if not denom:
+                continue
+            sim = len(ta & tb) / denom
+            if sim > best:
+                best = sim
+                if best == 1.0:
+                    return best
+    return best
+
+
+# Umbrales de similitud difusa (0.0-1.0) para generar un par candidato.
+# Se dejan deliberadamente permisivos: un falso positivo aquí solo cuesta una
+# comparación de CONTENIDO de más, que comparator.py descarta con un score
+# bajo; un falso negativo, en cambio, hace que un duplicado real nunca se
+# detecte. El filtrado fino de verdad ocurre al comparar el texto, no aquí.
+TITLE_FUZZY_THRESHOLD  = 0.85
+AUTHOR_FUZZY_THRESHOLD = 0.5
+
+# Tamaño de la ventana de comparación tras ordenar los libros por título
+# normalizado dentro de cada idioma ("sorted neighborhood"): cada libro solo
+# se compara con los N siguientes en ese orden, no con todos los demás.
+# Mantiene el coste en O(n · N) en vez de O(n²) en bibliotecas grandes, a
+# costa de no detectar coincidencias cuyo título normalizado empiece de forma
+# muy distinta (p. ej. una errata justo en la primera palabra).
+NEIGHBORHOOD_WINDOW = 40
 
 
 # ---------------------------------------------------------------------------
@@ -116,14 +193,20 @@ def _normalize_authors(authors):
 
 def scan_pairs_sync(db, restrict_to_ids=None):
     """
-    Scans the library (or a subset) and returns all pairs of books that
-    share the same NORMALIZED (title, authors, language) and have a supported
-    format (EPUB/AZW3).
+    Scans the library (or a subset) and returns candidate pairs of books that
+    likely are the same book (fuzzy title + fuzzy author, exact language) and
+    have a supported format (EPUB/AZW3).
 
-    El título y el autor se canonicalizan (ver _normalize_title /
-    _normalize_authors) para agrupar también ediciones con metadatos
-    ligeramente distintos.  El idioma se mantiene en la clave para no mezclar
-    traducciones que comparten título y autor.
+    Dos libros generan un par candidato si:
+      1. Comparten el mismo idioma EXACTO (evita mezclar traducciones).
+      2. La similitud de sus títulos normalizados (_normalize_title +
+         SequenceMatcher) es >= TITLE_FUZZY_THRESHOLD.
+      3. La similitud de al menos un autor de cada lado (_author_token_sets +
+         Jaccard) es >= AUTHOR_FUZZY_THRESHOLD.
+
+    Para evitar el coste O(n²) de comparar cada libro con todos los demás,
+    los libros se ordenan por título normalizado dentro de cada idioma y solo
+    se comparan con una ventana de vecinos cercanos (NEIGHBORHOOD_WINDOW).
 
     restrict_to_ids: iterable of book IDs, or None for the whole library.
     """
@@ -137,7 +220,7 @@ def scan_pairs_sync(db, restrict_to_ids=None):
 
     logger.info('[SCAN] books to scan: %d', len(all_ids))
 
-    groups = {}
+    records_by_lang = {}
     skipped_no_format = 0
 
     for book_id in all_ids:
@@ -171,31 +254,51 @@ def scan_pairs_sync(db, restrict_to_ids=None):
             lang = languages or ''
         lang = lang.strip().lower()
 
-        key = (_normalize_title(title), _normalize_authors(authors_raw), lang)
-        groups.setdefault(key, []).append({
-            'id':      book_id,
-            'title':   title,
-            'authors': authors,
-            'format':  fmt,
-            'path':    path,
-            'size':    _get_format_size(db, book_id, fmt),
+        records_by_lang.setdefault(lang, []).append({
+            'book': {
+                'id':      book_id,
+                'title':   title,
+                'authors': authors,
+                'format':  fmt,
+                'path':    path,
+                'size':    _get_format_size(db, book_id, fmt),
+            },
+            'norm_title':  _normalize_title(title),
+            'author_sets': _author_token_sets(authors_raw),
         })
 
-    logger.info('[SCAN] groups total: %d, skipped (no format): %d',
-                len(groups), skipped_no_format)
+    total_records = sum(len(v) for v in records_by_lang.values())
+    logger.info('[SCAN] languages: %d, records: %d, skipped (no format): %d',
+                len(records_by_lang), total_records, skipped_no_format)
 
     pairs = []
-    for key, books in groups.items():
-        if len(books) < 2:
-            continue
-        logger.info('[SCAN] group %r: %d books -> %d pairs',
-                    key[0], len(books), len(books) * (len(books) - 1) // 2)
-        for i in range(len(books)):
-            for j in range(i + 1, len(books)):
-                pairs.append({'book_a': books[i], 'book_b': books[j]})
+    for lang, records in records_by_lang.items():
+        records.sort(key=lambda r: r['norm_title'])
+        n = len(records)
+        lang_pairs = 0
+        for i in range(n):
+            rec_a = records[i]
+            for j in range(i + 1, min(i + 1 + NEIGHBORHOOD_WINDOW, n)):
+                rec_b = records[j]
+
+                title_sim = _title_similarity(rec_a['norm_title'], rec_b['norm_title'])
+                if title_sim < TITLE_FUZZY_THRESHOLD:
+                    continue
+
+                author_sim = _author_similarity(rec_a['author_sets'], rec_b['author_sets'])
+                if author_sim < AUTHOR_FUZZY_THRESHOLD:
+                    continue
+
+                pairs.append({'book_a': rec_a['book'], 'book_b': rec_b['book']})
+                lang_pairs += 1
+
+        if lang_pairs:
+            logger.info('[SCAN] language %r: %d books -> %d candidate pairs',
+                        lang, n, lang_pairs)
 
     logger.info('[SCAN] total pairs: %d', len(pairs))
     return pairs
+
 
 
 # ---------------------------------------------------------------------------

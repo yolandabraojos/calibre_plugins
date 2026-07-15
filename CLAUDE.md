@@ -8,11 +8,12 @@ la corrupcion por sincronizacion en la nube).
 
 | Carpeta              | Nombre Calibre       | Version | ZIP maestro (en dist/)      |
 |----------------------|----------------------|---------|-----------------------------|
-| book_classifier      | Book Classifier      | 3.0.0   | dist/BookClassifier.zip     |
-| ebook_comparator     | Ebook Comparator     | 2.6.2   | dist/EbookComparator.zip    |
-| fix_metadata         | Fix Metadata         | 1.3.3   | dist/FixMetadata.zip        |
+| book_classifier      | Book Classifier      | 3.4.1   | dist/BookClassifier.zip     |
+| ebook_comparator     | Ebook Comparator     | 2.7.1   | dist/EbookComparator.zip    |
+| fix_metadata         | Fix Metadata         | 1.5.9   | dist/FixMetadata.zip        |
 | extract_metadata     | Extract Metadata     | 1.3.2   | dist/ExtractMetadata.zip    |
 | all_libraries_stats  | All Libraries Stats  | 1.0.5   | dist/AllLibrariesStats.zip  |
+| goodreads_fast       | Goodreads Fast       | 1.6.0   | dist/GoodreadsFast.zip      |
 
 La version es la fuente de verdad en el `__init__.py` de cada plugin
 (`version = (X, Y, Z)`). El generador lee de ahi nombre y version.

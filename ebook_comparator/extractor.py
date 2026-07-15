@@ -322,7 +322,15 @@ def extract_azw3_chapters(azw3_path):
         if sys.platform == 'win32':
             creationflags = subprocess.CREATE_NO_WINDOW
         proc = subprocess.run(
-            [converter, azw3_path, epub_path],
+            [
+                converter, azw3_path, epub_path,
+                # Evita que Calibre trocee los HTML grandes en fragmentos
+                # 'partNNNN_split_00M.html' que no existen en el AZW3 original
+                # y que inflaban los "únicos en B" al comparar (1 capítulo de A
+                # frente a varios fragmentos de B).
+                '--flow-size', '0',            # sin partición por tamaño
+                '--dont-split-on-page-breaks', # sin partición por saltos de página
+            ],
             capture_output=True, text=True, creationflags=creationflags,
         )
         if proc.returncode != 0:

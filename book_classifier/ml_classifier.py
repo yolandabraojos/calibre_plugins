@@ -19,6 +19,7 @@ from __future__ import unicode_literals, division, absolute_import, print_functi
 
 import os
 import re
+import html
 import json
 import math
 import pkgutil
@@ -67,8 +68,18 @@ def _load_json(name):
 
 
 def normalize(text):
-    """Minúsculas, sin acentos, sin HTML ni puntuación (igual que el entrenamiento)."""
-    text = re.sub(r'<[^>]+>', ' ', text or '')
+    """Minúsculas, sin acentos, sin HTML ni puntuación (igual que el entrenamiento).
+
+    Decodifica entidades HTML (&amp; &#8212; &#39; ...) ANTES de limpiar, si no
+    sobreviven como palabras sueltas sin sentido ('amp', 'quot', '8212'...).
+    Elimina apostrofes en vez de convertirlos en espacio, para no partir
+    contracciones/posesivos ("world's" -> "worlds", no "world" + "s" suelto).
+    Debe coincidir EXACTAMENTE con scripts/train_book_classifier.py::normalize
+    -- si cambias uno, cambia el otro y reentrena (ver scripts/README.md).
+    """
+    text = html.unescape(text or '')
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = text.replace("'", '').replace('\u2019', '')
     text = unicodedata.normalize('NFKD', text)
     text = ''.join(c for c in text if not unicodedata.combining(c)).lower()
     text = re.sub(r"[^a-z0-9/\- ]", ' ', text)

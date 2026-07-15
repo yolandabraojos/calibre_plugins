@@ -1,6 +1,6 @@
 # Ebook Comparator — Documentación de comportamiento del plugin
 
-**Versión:** 2.4.0  
+**Versión:** 2.7.1  
 **Plataformas:** Windows · macOS · Linux  
 **Calibre mínimo:** 6.0.0
 
@@ -75,7 +75,7 @@ comparator.py        ← Algoritmo SimHash + TF-IDF + SequenceMatcher + ultrafas
 **Flujo:**
 
 1. El usuario selecciona N libros y activa *Comparar seleccionados automáticamente*.
-2. `scan_pairs_sync()` agrupa los libros por `(título, autor, idioma)` en el hilo principal (sólo metadatos, sin leer ficheros).
+2. `scan_pairs_sync()` genera pares candidatos comparando cada libro con sus vecinos por **similitud difusa de título y autor** (idioma exacto) en el hilo principal (sólo metadatos, sin leer ficheros). Ver [§6](#6-agrupación-de-pares).
    - Solo se consideran libros con formato EPUB o AZW3.
    - Se generan pares de libros dentro de cada grupo (combinaciones de 2).
 3. Los pares se dividen en **chunks de 20** (`CHUNK_SIZE = 20`).
@@ -280,23 +280,23 @@ No se calcula TF-IDF, SimHash, ni SequenceMatcher. Es adecuado para detectar dup
 
 ## 6. Agrupación de pares
 
-`scan_pairs_sync()` agrupa los libros candidatos por la clave compuesta:
+`scan_pairs_sync()` genera un par candidato entre dos libros cuando se cumplen las tres condiciones siguientes:
 
-```
-(título en minúsculas, autores en minúsculas, idioma en minúsculas)
-```
+1. **Idioma EXACTO.** El idioma es el primer valor del campo `languages` de Calibre para ese libro (cadena vacía si no está definido). Se exige exacto para no mezclar traducciones o ediciones bilingües que comparten título y autor.
+2. **Título difuso.** Los títulos se normalizan (`_normalize_title()`) y se comparan con `difflib.SequenceMatcher.ratio()`. La normalización, en este orden: (a) quita contenido entre paréntesis/corchetes — marcas de edición como "(Edición ilustrada)" o "[Tomo 1]"; (b) corta el título en el primer `:` y descarta lo que sigue — subtítulo; (c) minúsculas, sin puntuación, sin artículo inicial, espacios colapsados. Los pasos (a)/(b) van ANTES de quitar la puntuación general porque, una vez convertidos `:` y paréntesis en espacios, ya no hay forma de distinguir "esto es un subtítulo" de "son más palabras del título". El par se acepta si la similitud resultante es `>= TITLE_FUZZY_THRESHOLD` (0.85). Efecto colateral aceptado: títulos de una misma saga con el mismo prefijo antes de `:` (p. ej. "Star Wars: Episodio IV" y "Star Wars: Episodio V") normalizan igual y generan un par candidato — se descarta en la comparación de CONTENIDO, no aquí.
+3. **Autor difuso.** Cada autor se reduce a un conjunto de tokens (`_author_token_sets()`), independiente del orden de nombres y de la forma "Apellido, Nombre" vs "Nombre Apellido". Se compara CADA autor de un libro con CADA autor del otro usando el **coeficiente de solape** (tokens compartidos / tokens del nombre más corto, no Jaccard sobre la unión), y se toma el máximo. El par se acepta si ese máximo es `>= AUTHOR_FUZZY_THRESHOLD` (0.5). Usar el nombre más corto como denominador (en vez de la unión) permite que un autor con metadatos incompletos ("Tolkien") case con el nombre completo ("J.R.R. Tolkien"), caso en el que Jaccard clásico daría solo 0.33 y no se detectaría.
 
-El **idioma** es el primer valor del campo `languages` de Calibre para ese libro (cadena vacía si no está definido). Incluir el idioma en la clave evita falsos positivos entre ediciones en distintos idiomas que comparten título y autor (traducciones, ediciones bilingües, versiones para distintos mercados).
+**Coste computacional:** comparar cada libro con todos los demás sería O(n²). Para evitarlo, dentro de cada idioma los libros se ordenan por título normalizado y cada uno solo se compara con los `NEIGHBORHOOD_WINDOW` (40) siguientes en ese orden ("sorted neighborhood"), quedando en O(n · 40). Contrapartida: dos libros cuyo título normalizado empiece de forma muy distinta (p. ej. una errata en la primera palabra) pueden no llegar a compararse aunque coincidan en el resto.
+
+Un falso positivo en esta fase solo cuesta una comparación de CONTENIDO de más — `comparator.py` la descarta con un score bajo (ver [§5](#5-extracción-y-comparación-de-texto)). El filtrado fino de verdad ocurre ahí, no en esta agrupación; por eso los umbrales de título y autor se dejan deliberadamente permisivos.
 
 Solo se incluyen en la agrupación libros que tengan al menos un formato EPUB o AZW3. Los libros sin ninguno de estos formatos se omiten.
-
-Los pares se generan con todas las combinaciones de 2 dentro de cada grupo (C(n,2)).
 
 ---
 
 ## 7. Limitaciones conocidas
 
-- Solo se comparan libros que comparten **título, autor e idioma exactos** (en minúsculas). Diferencias tipográficas mínimas crean grupos separados.
+- El emparejamiento por título/autor es difuso (ver [§6](#6-agrupación-de-pares)) pero el **idioma sigue siendo exacto**, y el `NEIGHBORHOOD_WINDOW` puede dejar sin comparar libros cuyo título normalizado empiece de forma muy distinta (p. ej. errata en la primera palabra) o cuyo idioma en Calibre esté mal etiquetado. Subtítulos ("Título: Edición ilustrada") y marcas de edición entre paréntesis/corchetes ("Título (Edición ilustrada)") se descartan antes de comparar (desde v2.7.1), pero un subtítulo pegado SIN separador (p. ej. "El Hobbit Edición Ilustrada" sin `:` ni paréntesis) no se detecta.
 - Formatos soportados: **EPUB** y **AZW3**. PDF, MOBI y otros no se procesan.
 - La conversión AZW3 → EPUB requiere que `ebook-convert` esté accesible en el PATH o junto al ejecutable de Python.
 - Bibliotecas muy grandes (> 1000 libros con muchos duplicados) pueden generar muchos jobs simultáneos. Calibre los encola internamente pero puede haber espera.
@@ -309,5 +309,7 @@ Los pares se generan con todas las combinaciones de 2 dentro de cada grupo (C(n,
 
 | Versión | Cambios principales |
 |---|---|
+| **2.7.1** | `_normalize_title()` descarta subtítulos (tras `:`) y marcas de edición entre paréntesis/corchetes antes de comparar, para que "Título: Edición ilustrada" / "Título (Edición ilustrada)" normalicen igual que "Título". |
+| **2.7.0** | Agrupación de pares (`scan_pairs_sync()`) pasa de clave exacta `(título, autor, idioma)` a emparejamiento **difuso** de título (SequenceMatcher) y autor (coeficiente de solape de tokens), manteniendo el idioma exacto. Blocking por "sorted neighborhood" para mantener el coste O(n · ventana). |
 | **2.5.0** | Soporte de archivos `.xml` como contenido XHTML (detección por media-type OPF). Agrupación de pares por `(título, autor, idioma)`. Nuevo modo ultrarrápido que muestra solo pares con 100 % de similitud, con early-exit en la comparación. |
 | **2.4.0** | Algoritmo combined (SimHash + TF-IDF + SequenceMatcher). Penalización por diferencia de longitud. Detección de jacket por contenido. Extracción de archivos huérfanos fuera del spine. Detección case-insensitive de extensiones HTML. |

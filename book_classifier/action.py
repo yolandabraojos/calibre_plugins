@@ -7,11 +7,15 @@ import pkgutil
 import traceback
 from calibre.gui2.actions import InterfaceAction
 from calibre.gui2 import Dispatcher, error_dialog, question_dialog
-from qt.core import QIcon, QMenu, QAction, QPixmap, QProgressDialog, Qt, QFontMetrics
+from qt.core import QIcon, QMenu, QAction, QPixmap, Qt
 
 from calibre_plugins.book_classifier.config import prefs
-from calibre_plugins.book_classifier.ml_jobs import start_ml_classify_threaded, apply_ml_writes
-from calibre_plugins.book_classifier.llm_jobs import run_rescue_task
+from calibre_plugins.book_classifier.ml_jobs import (
+    plan_classify_chunks, run_classify_chunk_task, run_author_fallback_task,
+    apply_ml_writes)
+from calibre.gui2.threaded_jobs import ThreadedJob
+from calibre_plugins.book_classifier.llm_jobs import (
+    select_rescue_candidates, plan_rescue_chunks, run_rescue_batch_task)
 
 try:
     from calibre_plugins.book_classifier import get_icons
@@ -121,6 +125,7 @@ class BookClassifierAction(InterfaceAction):
                 'universe_field':    prefs.get('ml_universe_field', '#universe'),
                 'author_fallback':   prefs.get('ml_author_fallback', True),
                 'author_dominance':  prefs.get('ml_author_dominance', 0.6),
+                'ai_batch_ref':      prefs.get('llm_batch', 10),
             }
 
             missing = self._check_missing_fields(settings)
@@ -135,24 +140,42 @@ class BookClassifierAction(InterfaceAction):
                     show=True)
                 return
 
-            worker, thread = start_ml_classify_threaded(self.gui, book_ids, settings)
+            # Agrupa por serie/universo ANTES de lanzar nada (lectura rapida en
+            # el hilo de la GUI) y lanza UN ThreadedJob POR GRUPO (+ lotes de
+            # libros sueltos), en vez de un unico hilo que clasifica toda la
+            # biblioteca de un tiron. Asi: (1) cada grupo aplica sus cambios en
+            # cuanto termina, sin esperar al resto; (2) corre en segundo plano
+            # (lista de tareas de Calibre), sin dialogo modal bloqueante; (3)
+            # cada tarea es cancelable por separado desde esa lista.
+            chunks = plan_classify_chunks(self.gui, book_ids, settings)
+            if not chunks:
+                error_dialog(self.gui, 'Sin libros', 'No hay libros que clasificar.', show=True)
+                return
 
-            self._progress_dialog = QProgressDialog(
-                'Clasificando con IA...', 'Cancelar', 0, len(book_ids), self.gui)
-            self._progress_dialog.setWindowTitle('Clasificación IA')
-            self._progress_dialog.setWindowModality(Qt.WindowModal)
-            self._progress_dialog.setMinimumDuration(0)
-            self._progress_dialog.setValue(0)
-            self._progress_dialog.canceled.connect(worker.cancel)
+            self._ml_run = {
+                'pending': len(chunks), 'book_ids': list(book_ids), 'settings': settings,
+                'total': 0, 'classified': 0, 'errors': 0, 'dist': {},
+                'group_count': 0, 'unified_books': 0, 'author_resolved': 0,
+                'book_details': [], 'failed_chunks': [],
+                'first_error': '', 'error_samples': [],
+            }
+            for chunk in chunks:
+                job = ThreadedJob(
+                    'book_classifier_ml_classify',
+                    'Clasificar IA - {}'.format(chunk['label']),
+                    run_classify_chunk_task,
+                    (self.gui.current_db, chunk['subgroups'], chunk['loose_ids'],
+                     settings, chunk['label']),
+                    {}, Dispatcher(self._ml_chunk_done))
+                self.gui.job_manager.run_threaded_job(job)
 
-            worker.progress.connect(self._update_progress)
-            worker.finished.connect(self._finish_progress)
-            worker.finished.connect(self._ml_job_finished)
-            thread.finished.connect(self._clear_thread)
-
-            self._active_worker = worker
-            self._active_thread = thread
-            thread.start()
+            try:
+                self.gui.status_bar.show_message(
+                    'Clasificacion IA lanzada en {} tarea(s) (una por serie/universo '
+                    '+ lotes de sueltos). Mira la lista de tareas; puedes seguir '
+                    'usando Calibre.'.format(len(chunks)), 6000)
+            except Exception:
+                pass
         except Exception:
             print("DEBUG ERROR: Fallo al lanzar el clasificador IA")
             traceback.print_exc()
@@ -183,22 +206,96 @@ class BookClassifierAction(InterfaceAction):
                 missing.append((field, uso))
         return missing
 
-    def _ml_job_finished(self, result):
+    def _ml_chunk_done(self, job):
         try:
-            if not isinstance(result, dict):
-                error_dialog(self.gui, 'Error', 'Resultado IA inesperado.', show=True)
+            run = getattr(self, '_ml_run', None)
+            if run is None:
                 return
-            if result.get('failed'):
-                error_dialog(self.gui, 'Error',
-                             'No se pudo cargar el modelo IA:\n{}'.format(result.get('error', '')),
-                             show=True)
-                return
-            if result.get('writes_by_field'):
-                apply_ml_writes(self.gui, result['writes_by_field'])
-            self._show_ml_results(result)
+            if getattr(job, 'failed', False):
+                tb = getattr(job, 'traceback', '') or ''
+                run['failed_chunks'].append(
+                    (str(getattr(job, 'exception', '')) + '\n' + tb).strip())
+            else:
+                result = getattr(job, 'result', None) or {}
+                if result.get('failed'):
+                    run['failed_chunks'].append(result.get('error', ''))
+                else:
+                    if result.get('writes_by_field'):
+                        apply_ml_writes(self.gui, result['writes_by_field'])
+                    if not run['first_error'] and result.get('first_error'):
+                        run['first_error'] = result['first_error']
+                    for smp in result.get('error_samples', []):
+                        if len(run['error_samples']) < 20:
+                            run['error_samples'].append(smp)
+                    run['total']         += result.get('total', 0)
+                    run['classified']    += result.get('classified', 0)
+                    run['errors']        += result.get('errors', 0)
+                    run['group_count']   += result.get('group_count', 0)
+                    run['unified_books'] += result.get('unified_books', 0)
+                    for k, v in result.get('dist', {}).items():
+                        run['dist'][k] = run['dist'].get(k, 0) + v
+                    room = 400 - len(run['book_details'])
+                    if room > 0:
+                        run['book_details'].extend(result.get('book_details', [])[:room])
+            run['pending'] -= 1
+            if run['pending'] <= 0:
+                self._ml_start_author_fallback()
         except Exception:
-            print("DEBUG ERROR en _ml_job_finished:")
+            print("DEBUG ERROR en _ml_chunk_done:")
             traceback.print_exc()
+
+    def _ml_start_author_fallback(self):
+        try:
+            run = self._ml_run
+            settings = run['settings']
+            if not settings.get('author_fallback', True):
+                self._finish_ml_run()
+                return
+            job = ThreadedJob(
+                'book_classifier_ml_author', 'Clasificar IA - consenso por autor',
+                run_author_fallback_task,
+                (self.gui.current_db, run['book_ids'], settings), {},
+                Dispatcher(self._ml_author_done))
+            self.gui.job_manager.run_threaded_job(job)
+        except Exception:
+            print("DEBUG ERROR en _ml_start_author_fallback:")
+            traceback.print_exc()
+            self._finish_ml_run()
+
+    def _ml_author_done(self, job):
+        try:
+            run = getattr(self, '_ml_run', None)
+            if run is None:
+                return
+            if getattr(job, 'failed', False):
+                tb = getattr(job, 'traceback', '') or ''
+                run['failed_chunks'].append(
+                    ('consenso por autor: ' + str(getattr(job, 'exception', ''))
+                     + '\n' + tb).strip())
+            else:
+                result = getattr(job, 'result', None) or {}
+                if result.get('failed') and not run['first_error']:
+                    run['first_error'] = result.get('error', '')
+                if result.get('writes_by_field'):
+                    apply_ml_writes(self.gui, result['writes_by_field'])
+                run['author_resolved'] += result.get('author_resolved', 0)
+                room = 400 - len(run['book_details'])
+                if room > 0:
+                    run['book_details'].extend(result.get('book_details', [])[:room])
+        except Exception:
+            print("DEBUG ERROR en _ml_author_done:")
+            traceback.print_exc()
+        finally:
+            self._finish_ml_run()
+
+    def _finish_ml_run(self):
+        run = getattr(self, '_ml_run', None)
+        self._ml_run = None
+        if run is None:
+            return
+        if run.get('failed_chunks'):
+            print("DEBUG: chunks con error en clasificacion IA:", run['failed_chunks'])
+        self._show_ml_results(run)
 
     def _show_ml_results(self, stats):
         try:
@@ -244,6 +341,23 @@ class BookClassifierAction(InterfaceAction):
                 txt.setPlainText('\n'.join(body))
                 layout.addWidget(txt)
 
+            err_bits = []
+            if stats.get('first_error'):
+                err_bits.append('Primer error (con traza):\n' + str(stats['first_error']))
+            if stats.get('error_samples'):
+                err_bits.append('Libros con error ({}):\n{}'.format(
+                    len(stats['error_samples']), '\n'.join(stats['error_samples'])))
+            if stats.get('failed_chunks'):
+                err_bits.append('Tareas que fallaron por completo:\n' +
+                                '\n\n'.join(str(x) for x in stats['failed_chunks']))
+            if err_bits:
+                dialog.resize(700, 580)
+                layout.addWidget(QLabel('Detalles de los errores:'))
+                errbox = QTextEdit()
+                errbox.setReadOnly(True)
+                errbox.setPlainText('\n\n'.join(err_bits))
+                layout.addWidget(errbox)
+
             btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
             btns.accepted.connect(dialog.accept)
             layout.addWidget(btns)
@@ -275,6 +389,7 @@ class BookClassifierAction(InterfaceAction):
                 title = db.field_for('title', bid) or 'Sin titulo'
                 authors = list(db.field_for('authors', bid) or [])
                 comments = db.field_for('comments', bid) or ''
+                languages = list(db.field_for('languages', bid) or [])
             except Exception:
                 continue
             if lib_field == 'tags':
@@ -298,8 +413,9 @@ class BookClassifierAction(InterfaceAction):
                     return None
 
             prev = {lib_field: _fval(lib_field), mood_field: _fval(mood_field)}
+            idioma = ','.join(sorted(str(x) for x in languages))
             books.append({'id': bid, 'title': title, 'authors': authors,
-                          'comments': comments, 'tags': tags,
+                          'comments': comments, 'tags': tags, 'idioma': idioma,
                           'lib_value': lib_value, 'prev': prev})
         return books
 
@@ -325,52 +441,150 @@ class BookClassifierAction(InterfaceAction):
                 'llm_batch':      prefs.get('llm_batch', 10),
                 'llm_min_conf':   prefs.get('llm_min_conf', 0.55),
                 'llm_write_temas': prefs.get('llm_write_temas', True),
+                'llm_write_reason': prefs.get('llm_write_reason', True),
+                'llm_reason_field': prefs.get('llm_reason_field', '#motivo_ia'),
+                'llm_write_serie': prefs.get('llm_write_serie', True),
+                'llm_serie_field': prefs.get('llm_serie_field', '#serie_ia'),
+                'llm_write_conf':  prefs.get('llm_write_conf', True),
+                'llm_conf_field':  prefs.get('llm_conf_field', '#confianza_ia'),
                 'force_all':       force,
             }
             books = self._prefetch_books(book_ids, settings)
-            from calibre.gui2.threaded_jobs import ThreadedJob
-            desc = '{} con IA de {} libros'.format(
-                'Reevaluacion' if force else 'Rescate', len(books))
-            job = ThreadedJob(
-                'book_classifier_llm_rescue', desc, run_rescue_task,
-                (books, settings), {}, Dispatcher(self._llm_job_done))
-            self.gui.job_manager.run_threaded_job(job)
+
+            # Filtra los candidatos ANTES de lanzar nada (rapido, sin red) y
+            # reparte el rescate en VARIOS jobs (en vez de uno solo con todos
+            # los libros): cada job hace 1-2 llamadas a la IA y aplica sus
+            # cambios en cuanto termina, sin esperar a que acabe el resto.
+            cand, diag = select_rescue_candidates(books, settings)
+
+            if not cand:
+                self._show_llm_results({
+                    'candidates': 0, 'total': len(books), 'cancelled': False,
+                    'lib_field': settings.get('library_field', 'tags'),
+                    'with_value': diag['with_value'], 'sample': diag['sample'],
+                })
+                return
+
+            chunks = plan_rescue_chunks(cand, settings)
+
+            from calibre_plugins.book_classifier import llm_rescue_engine as eng
+            try:
+                _kind, _dmodel, _base = eng.PROVIDERS.get(
+                    provider, ('', settings.get('llm_model') or '?', '?'))
+            except Exception:
+                _dmodel, _base = (settings.get('llm_model') or '?'), '?'
+
+            self._llm_run = {
+                'pending': len(chunks), 'settings': settings,
+                'total': len(books), 'candidates': len(cand),
+                'rescued': 0, 'errors': 0, 'dist': {}, 'book_details': [],
+                'first_error': '', 'failed_chunks': [],
+                'provider': provider,
+                'model_used': settings.get('llm_model') or _dmodel,
+                'base_used': _base,
+                'lib_field': settings.get('library_field', 'tags'),
+                'with_value': diag['with_value'], 'sample': diag['sample'],
+            }
+            for chunk in chunks:
+                job = ThreadedJob(
+                    'book_classifier_llm_rescue',
+                    '{} con IA - {}'.format(
+                        'Reevaluacion' if force else 'Rescate', chunk['label']),
+                    run_rescue_batch_task,
+                    (chunk['cand'], settings, chunk['label']), {},
+                    Dispatcher(self._llm_chunk_done))
+                self.gui.job_manager.run_threaded_job(job)
+
             try:
                 self.gui.status_bar.show_message(
-                    'Rescate con IA lanzado. Miralo en la lista de tareas '
-                    '(abajo a la derecha); puedes seguir usando Calibre.', 6000)
+                    '{} con IA lanzado en {} tarea(s) sobre {} libro(s){}. Mira '
+                    'la lista de tareas; puedes seguir usando Calibre.'.format(
+                        'Reevaluacion' if force else 'Rescate',
+                        len(chunks), len(cand),
+                        (' ({} copias duplicadas agrupadas, no se reenvian)'.format(
+                            diag.get('duplicates_saved', 0))
+                         if diag.get('duplicates_saved') else '')), 6000)
             except Exception:
                 pass
         except Exception:
             print("DEBUG ERROR: Fallo al lanzar el rescate IA")
             traceback.print_exc()
 
-    def _llm_job_done(self, job):
+    def _llm_chunk_done(self, job):
         try:
+            run = getattr(self, '_llm_run', None)
+            if run is None:
+                return
             if getattr(job, 'failed', False):
-                try:
-                    return self.gui.job_exception(
-                        job, dialog_title='Error en el rescate con IA')
-                except Exception:
-                    error_dialog(
-                        self.gui, 'Rescate con IA',
-                        'La tarea fallo:\n{}'.format(getattr(job, 'exception', '')),
-                        det_msg=getattr(job, 'traceback', '') or '', show=True)
-                    return
-            result = getattr(job, 'result', None)
-            if not isinstance(result, dict):
-                error_dialog(self.gui, 'Error', 'Resultado de rescate inesperado.', show=True)
-                return
-            if result.get('failed'):
-                error_dialog(self.gui, 'Rescate con IA',
-                             result.get('error', 'Fallo desconocido'), show=True)
-                return
-            if result.get('writes_by_field'):
-                apply_ml_writes(self.gui, result['writes_by_field'])
-            self._show_llm_results(result)
+                run['failed_chunks'].append(str(getattr(job, 'exception', '')))
+            else:
+                result = getattr(job, 'result', None) or {}
+                if result.get('failed'):
+                    run['failed_chunks'].append(result.get('error', ''))
+                else:
+                    if result.get('writes_by_field'):
+                        apply_ml_writes(self.gui, result['writes_by_field'])
+                    reason_field = (run['settings'].get('llm_reason_field')
+                                    if run['settings'].get('llm_write_reason', True) else None)
+                    if result.get('reason_writes') and reason_field:
+                        self._apply_reason_writes(reason_field, result['reason_writes'])
+                    serie_field = (run['settings'].get('llm_serie_field')
+                                   if run['settings'].get('llm_write_serie', True) else None)
+                    if result.get('serie_writes') and serie_field:
+                        self._apply_custom_writes(serie_field, result['serie_writes'],
+                                                  'la serie detectada por la IA', 'texto')
+                    conf_field = (run['settings'].get('llm_conf_field')
+                                  if run['settings'].get('llm_write_conf', True) else None)
+                    if result.get('conf_writes') and conf_field:
+                        self._apply_custom_writes(conf_field, result['conf_writes'],
+                                                  'el % de confianza de la IA',
+                                                  'entero (numero)')
+                    run['rescued'] += result.get('rescued', 0)
+                    run['errors']  += result.get('errors', 0)
+                    for k, v in result.get('dist', {}).items():
+                        run['dist'][k] = run['dist'].get(k, 0) + v
+                    if not run['first_error'] and result.get('first_error'):
+                        run['first_error'] = result['first_error']
+                    room = 400 - len(run['book_details'])
+                    if room > 0:
+                        run['book_details'].extend(result.get('book_details', [])[:room])
+            run['pending'] -= 1
+            if run['pending'] <= 0:
+                self._finish_llm_run()
         except Exception:
-            print("DEBUG ERROR en _llm_job_done:")
+            print("DEBUG ERROR en _llm_chunk_done:")
             traceback.print_exc()
+
+    def _finish_llm_run(self):
+        run = getattr(self, '_llm_run', None)
+        self._llm_run = None
+        if run is None:
+            return
+        if run.get('failed_chunks'):
+            print("DEBUG: chunks con error en rescate IA:", run['failed_chunks'])
+        self._show_llm_results(run)
+    def _apply_custom_writes(self, field, id_map, what='el dato', tipo='texto'):
+        # Escribe valores de la IA en una columna personalizada.
+        # No fatal si la columna no existe: avisa pero no rompe el resto.
+        try:
+            db = self.gui.current_db.new_api
+            valid = set(db.field_metadata.all_field_keys())
+            if field not in valid:
+                error_dialog(
+                    self.gui, 'Falta una columna',
+                    'La columna "{}" no existe en esta biblioteca, asi que no se '
+                    'pudo guardar {} (el resto de la clasificacion si se aplico).'
+                    '\n\nCreala en Preferencias -> Anadir columnas personalizadas '
+                    '(tipo {}) o cambia el nombre en Configurar plugin -> Rescate '
+                    'con IA.'.format(field, what, tipo), show=True)
+                return
+            db.set_field(field, id_map)
+        except Exception:
+            print("DEBUG ERROR en _apply_custom_writes:")
+            traceback.print_exc()
+
+    def _apply_reason_writes(self, field, id_map):
+        self._apply_custom_writes(field, id_map, 'el motivo de la IA', 'texto largo')
 
     def _show_llm_results(self, stats):
         try:
@@ -425,8 +639,6 @@ class BookClassifierAction(InterfaceAction):
                 'Rescatados por la IA:     {}'.format(stats.get('rescued', 0)),
                 'Errores:                  {}'.format(stats.get('errors', 0)),
             ]
-            if stats.get('first_error'):
-                lines += ['', 'Primer error: {}'.format(str(stats['first_error'])[:200])]
             dist = stats.get('dist', {})
             if dist:
                 lines += ['', 'Reparto por libreria (IA):']
@@ -446,11 +658,27 @@ class BookClassifierAction(InterfaceAction):
                         d['title'][:46], d.get('library') or '?', d.get('confidence', 0)))
                     if d.get('moods'):
                         body.append('      tema: {}'.format(', '.join(d['moods'])))
+                    if d.get('motivo'):
+                        body.append('      motivo: {}'.format(d['motivo']))
                 txt.setPlainText('\n'.join(body))
                 layout.addWidget(txt)
             else:
                 dialog.resize(470, 320)
                 layout.addStretch(1)
+
+            err_bits = []
+            if stats.get('first_error'):
+                err_bits.append('Primer error (con traza):\n' + str(stats['first_error']))
+            if stats.get('failed_chunks'):
+                err_bits.append('Tareas que fallaron:\n' +
+                                '\n\n'.join(str(x) for x in stats['failed_chunks']))
+            if err_bits:
+                dialog.resize(700, 580)
+                layout.addWidget(QLabel('Detalles de los errores:'))
+                errbox = QTextEdit()
+                errbox.setReadOnly(True)
+                errbox.setPlainText('\n\n'.join(err_bits))
+                layout.addWidget(errbox)
 
             btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
             btns.accepted.connect(dialog.accept)
@@ -551,22 +779,6 @@ class BookClassifierAction(InterfaceAction):
         except Exception as e:
             print('DEBUG ERROR: No se pudo cargar el icono -', e)
 
-    def _update_progress(self, index, title):
-        if hasattr(self, '_progress_dialog') and self._progress_dialog:
-            fm = QFontMetrics(self._progress_dialog.font())
-            elided = fm.elidedText(title, Qt.ElideRight, 320)
-            self._progress_dialog.setLabelText('Analizando: ' + elided)
-            self._progress_dialog.setValue(index)
-
-    def _finish_progress(self, result):
-        if hasattr(self, '_progress_dialog') and self._progress_dialog:
-            self._progress_dialog.setValue(self._progress_dialog.maximum())
-            self._progress_dialog.close()
-            self._progress_dialog = None
-
-    def _clear_thread(self):
-        self._active_worker = None
-        self._active_thread = None
 
     def show_config(self):
         from calibre_plugins.book_classifier.config import show_config_dialog

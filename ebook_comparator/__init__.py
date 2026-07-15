@@ -6,7 +6,7 @@ class EbookComparatorPlugin(InterfaceActionBase):
     description             = 'Compara ebooks y muestra porcentaje de similitud'
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Yolanda Braojos'
-    version                 = (2, 6, 2)
+    version                 = (2, 7, 1)
     minimum_calibre_version = (6, 0, 0)
     actual_plugin           = 'calibre_plugins.ebook_comparator.action:EbookComparatorAction'
     icon = 'plugin.svg'

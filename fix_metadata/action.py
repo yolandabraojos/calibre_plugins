@@ -32,6 +32,10 @@ try:
     from calibre_plugins.fix_metadata.fix_identifiers import fix_identifiers
     from calibre_plugins.fix_metadata.fix_world import (
         load_world_map, world_for_series)
+    from calibre_plugins.fix_metadata.fix_comments import (
+        analyze_comment, ISSUE_LABELS)
+    from calibre_plugins.fix_metadata.fix_tags import (
+        load_tags_map, clean_tags)
 except Exception as e:
     logger.error(f"Error importing fix modules: {e}")
 
@@ -368,6 +372,102 @@ class WorldReviewDialog(QDialog):
         return result
 
 
+class TagsReviewDialog(QDialog):
+    """Review tag canonicalisation (old tags -> new tags) per book.
+
+    changes: [(book_id, title, old_str, new_str, new_list, unknown_list)]
+    """
+    COL_TITLE = 0
+    COL_OLD = 1
+    COL_NEW = 2
+
+    def __init__(self, parent, changes):
+        super().__init__(parent)
+        self.changes = changes
+        self.setWindowTitle('Fix Tags - Review Changes')
+        self.setWindowModality(Qt.WindowModal)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        n_unknown = sum(1 for c in self.changes if c[5])
+        lbl = QLabel(
+            '<b>{}</b> book(s) with tag changes.<br>'
+            'Tags are mapped onto the controlled vocabulary '
+            '(Grupo \u00b7 Valor). Rows with unrecognised tags are kept as-is '
+            'and marked for review (<b>{}</b> such book(s)).<br>'
+            'Check the rows to apply, then click <b>Apply</b>.'.format(
+                len(self.changes), n_unknown))
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+
+        self.table = QTableWidget(len(self.changes), 3, self)
+        self.table.setHorizontalHeaderLabels(['Title', 'Current tags', 'New tags'])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        self.table.blockSignals(True)
+        for row, (book_id, title, old_str, new_str, _new_list, unknown) in enumerate(self.changes):
+            item = QTableWidgetItem(title)
+            item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            item.setCheckState(Qt.Checked)
+            item.setData(Qt.UserRole, book_id)
+            self.table.setItem(row, self.COL_TITLE, item)
+            self.table.setItem(row, self.COL_OLD, QTableWidgetItem(old_str))
+            new_item = QTableWidgetItem(new_str)
+            if unknown:
+                new_item.setToolTip('Sin mapear (se conservan): ' + ', '.join(unknown))
+            self.table.setItem(row, self.COL_NEW, new_item)
+        self.table.blockSignals(False)
+        self.table.resizeColumnsToContents()
+        self.table.setSortingEnabled(True)
+        self.table.itemChanged.connect(self._on_item_changed)
+        layout.addWidget(self.table)
+
+        bar = QHBoxLayout()
+        b1 = QPushButton('Select All'); b1.clicked.connect(lambda: self._set_all(Qt.Checked)); bar.addWidget(b1)
+        b2 = QPushButton('Deselect All'); b2.clicked.connect(lambda: self._set_all(Qt.Unchecked)); bar.addWidget(b2)
+        bar.addStretch()
+        self.apply_btn = QPushButton(); self.apply_btn.setDefault(True)
+        self.apply_btn.clicked.connect(self.accept); bar.addWidget(self.apply_btn)
+        cancel = QPushButton('Cancel'); cancel.clicked.connect(self.reject); bar.addWidget(cancel)
+        layout.addLayout(bar)
+        self._refresh()
+        self.resize(QSize(1000, 560))
+
+    def _on_item_changed(self, item):
+        if item.column() == self.COL_TITLE:
+            self._refresh()
+
+    def _count(self):
+        return sum(1 for r in range(self.table.rowCount())
+                   if self.table.item(r, self.COL_TITLE).checkState() == Qt.Checked)
+
+    def _set_all(self, state):
+        self.table.blockSignals(True)
+        for r in range(self.table.rowCount()):
+            self.table.item(r, self.COL_TITLE).setCheckState(state)
+        self.table.blockSignals(False)
+        self._refresh()
+
+    def _refresh(self):
+        n = self._count()
+        self.apply_btn.setText('Apply ({})'.format(n))
+        self.apply_btn.setEnabled(n > 0)
+
+    def get_selected_changes(self):
+        result = []
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, self.COL_TITLE).checkState() == Qt.Checked:
+                book_id = self.table.item(r, self.COL_TITLE).data(Qt.UserRole)
+                for ch in self.changes:
+                    if ch[0] == book_id:
+                        result.append(ch); break
+        return result
+
+
 class FixMetadataAction(InterfaceAction):
 
     name        = 'Fix Metadata'
@@ -454,6 +554,32 @@ class FixMetadataAction(InterfaceAction):
         ac = world_menu.addAction('Entire library')
         ac.setToolTip('Fill #world from series for every book in the library')
         ac.triggered.connect(lambda: self.fix_world_action(scope='all'))
+
+        self.menu.addSeparator()
+
+        # ---- Check comments submenu ----
+        comments_menu = self.menu.addMenu('Check comments  (flag bad synopses)')
+        ac = comments_menu.addAction('Selected books')
+        ac.setToolTip('Flag comments that are empty, too short, too long, have '
+                      'internal repetition, or are junk/boilerplate (including '
+                      'appended About the Author/Praise/Reviews/Excerpt '
+                      'sections); mark them for review')
+        ac.triggered.connect(lambda: self.check_comments_action(scope='selected'))
+        ac = comments_menu.addAction('Entire library')
+        ac.setToolTip('Check comments for every book in the library')
+        ac.triggered.connect(lambda: self.check_comments_action(scope='all'))
+
+        self.menu.addSeparator()
+
+        # ---- Fix tags submenu ----
+        tags_menu = self.menu.addMenu('Fix tags  (canonicalise to Grupo \u00b7 Valor)')
+        ac = tags_menu.addAction('Selected books')
+        ac.setToolTip('Map messy/bilingual tags onto the controlled Spanish '
+                      'vocabulary (Grupo \u00b7 Valor); review before saving')
+        ac.triggered.connect(lambda: self.fix_tags_action(scope='selected'))
+        ac = tags_menu.addAction('Entire library')
+        ac.setToolTip('Canonicalise tags for every book in the library')
+        ac.triggered.connect(lambda: self.fix_tags_action(scope='all'))
 
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
@@ -1083,3 +1209,267 @@ class FixMetadataAction(InterfaceAction):
             details += '\n'
         info_dialog(self.gui, 'Fix Subtitle',
                     f'{len(updated_ids)} book(s) updated.', det_msg=details, show=True)
+
+    # ------------------------------------------------------------------ #
+    #  Action: Check comments (flag bad synopses)                          #
+    # ------------------------------------------------------------------ #
+
+    def check_comments_action(self, scope='selected'):
+        """Flag comments (synopsis) that look wrong and mark books for review.
+
+        Detects, per book: empty / too short / too long / internal repetition /
+        junk-boilerplate (including appended front-back matter such as About
+        the Author, Praise, Reviews or an Excerpt -- that is not a synopsis
+        and counts as junk; HTML markup itself is never treated as junk).
+        Cross-book duplicate synopses are NOT flagged -- duplicate books in
+        the library are normal and expected.  Nothing is modified: affected
+        books are marked so they can be filtered with
+        ``marks:revisar_comentario`` (or a specific reason, e.g.
+        ``marks:comentario_corto``).
+        """
+        logger.info(f"Action triggered: Check comments ({scope})")
+
+        book_ids = self._get_book_ids(scope)
+        if book_ids is None:
+            return
+
+        db      = self.gui.current_db
+        new_api = db.new_api
+        total   = len(book_ids)
+
+        progress = QProgressDialog(self.gui)
+        progress.setWindowTitle('Check Comments')
+        progress.setCancelButtonText('Cancel')
+        progress.setRange(0, total)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+
+        # ── Phase 1: bulk read of all comments ──────────────────────────
+        progress.setLabelText(f'Loading comments for {total} books…')
+        progress.setValue(0)
+        QApplication.processEvents()
+        comments = new_api.all_field_for('comments', book_ids)
+        if progress.wasCanceled():
+            return
+
+        # ── Phase 2: per-book analysis ───────────────────────────────────
+        per_book = {}   # book_id -> set(issue codes)
+        BATCH    = 500
+        progress.setLabelText(f'Analysing {total} comments…')
+        QApplication.processEvents()
+
+        for i, book_id in enumerate(book_ids):
+            if progress.wasCanceled():
+                return
+            html   = comments.get(book_id) or ''
+            issues = set(analyze_comment(html))
+            if issues:
+                per_book[book_id] = issues
+            if i % BATCH == 0:
+                progress.setLabelText(
+                    f'Analysing [{i + 1} / {total}]…  ({len(per_book)} flagged)')
+                progress.setValue(i)
+                QApplication.processEvents()
+
+        progress.setValue(total)
+        progress.close()
+
+        if not per_book:
+            info_dialog(self.gui, 'Check Comments',
+                        'No se detectaron comentarios problemáticos '
+                        f'({total} libros revisados).', show=True)
+            return
+
+        # ── Phase 3: mark the affected books (merge with existing marks) ─
+        try:
+            marked = dict(getattr(db.data, 'marked_ids', {}) or {})
+        except Exception:
+            marked = {}
+        for book_id, issues in per_book.items():
+            tokens = ['revisar_comentario']
+            tokens += [f'comentario_{c}' for c in sorted(issues)]
+            marked[book_id] = ' '.join(tokens)
+        try:
+            db.set_marked_ids(marked)
+            self.gui.library_view.model().refresh_ids(list(per_book.keys()))
+            logger.info(f"Marked {len(per_book)} book(s) as 'revisar_comentario'")
+        except Exception as e:
+            logger.error(f'Could not set marked ids: {e}')
+
+        self.gui.status_bar.show_message(
+            f'Comments checked: {len(per_book)} book(s) marked for review', 3000)
+
+        # ── Phase 4: summary + details ──────────────────────────────────
+        counts = {}
+        for issues in per_book.values():
+            for c in issues:
+                counts[c] = counts.get(c, 0) + 1
+
+        code_order = ['vacio', 'corto', 'largo', 'repetido', 'basura']
+        msg  = f'{len(per_book)} de {total} libros marcados para revisar.\n\n'
+        msg += 'Por tipo (un libro puede tener varios):\n'
+        for c in code_order:
+            if counts.get(c):
+                msg += f'  • {ISSUE_LABELS.get(c, c)}: {counts[c]}\n'
+        msg += ('\nBuscar en Calibre:  marks:revisar_comentario\n'
+                'Por tipo:  marks:comentario_corto, comentario_largo,\n'
+                '           comentario_repetido, comentario_basura,\n'
+                '           comentario_vacio')
+
+        titles = new_api.all_field_for('title', list(per_book.keys()))
+        details = 'Libros marcados:\n\n'
+        for book_id, issues in sorted(
+                per_book.items(),
+                key=lambda kv: titles.get(kv[0]) or ''):
+            title = titles.get(book_id) or f'Book {book_id}'
+            labels = ', '.join(ISSUE_LABELS.get(c, c)
+                               for c in code_order if c in issues)
+            details += f'"{title}"\n    → {labels}\n'
+
+        info_dialog(self.gui, 'Check Comments', msg,
+                    det_msg=details, show=True)
+
+    # ------------------------------------------------------------------ #
+    #  Action: Fix tags (canonicalise to "Grupo · Valor")                  #
+    # ------------------------------------------------------------------ #
+
+    def fix_tags_action(self, scope='selected'):
+        """Consolidate tags from ``tags`` + ``#subjects`` + ``#clasificacion``
+        onto the controlled Spanish vocabulary and store everything in ``tags``.
+
+        Recognised values become their canonical ``Grupo · Valor`` form, junk is
+        removed, and unrecognised tags are kept (no data loss); their books are
+        marked ``revisar_tags``.  ``#subjects`` is emptied after consolidation;
+        ``#clasificacion`` is left untouched (owned by the classifier).
+        """
+        logger.info(f"Action triggered: Fix tags ({scope})")
+
+        book_ids = self._get_book_ids(scope)
+        if book_ids is None:
+            return
+
+        rules, drop, drop_res = load_tags_map()
+        if not rules:
+            error_dialog(self.gui, 'Missing tag map',
+                         "tags_map.json was not found or is empty.", show=True)
+            return
+
+        db      = self.gui.current_db
+        new_api = db.new_api
+        total   = len(book_ids)
+
+        keys = db.custom_field_keys()
+        has_subjects = '#subjects' in keys
+        has_clasif   = '#clasificacion' in keys
+
+        def _tolist(v):
+            if v is None:
+                return []
+            if isinstance(v, (list, tuple)):
+                return [str(x).strip() for x in v if str(x).strip()]
+            txt = str(v).strip()
+            return [p.strip() for p in txt.split(',') if p.strip()] if txt else []
+
+        progress = QProgressDialog(self.gui)
+        progress.setWindowTitle('Fix Tags')
+        progress.setCancelButtonText('Cancel')
+        progress.setRange(0, total)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+
+        progress.setLabelText(f'Loading tags for {total} books…')
+        progress.setValue(0)
+        QApplication.processEvents()
+        all_tags   = new_api.all_field_for('tags', book_ids)
+        all_subj   = new_api.all_field_for('#subjects', book_ids) if has_subjects else {}
+        all_clasif = new_api.all_field_for('#clasificacion', book_ids) if has_clasif else {}
+        if progress.wasCanceled():
+            return
+
+        # (book_id, title, old_str, new_str, new_list, unknown_list)
+        pending = []
+        subj_clear = {}   # book_id -> True when its #subjects must be emptied
+        BATCH = 500
+        progress.setLabelText(f'Analysing {total} books…')
+        QApplication.processEvents()
+
+        for i, book_id in enumerate(book_ids):
+            if progress.wasCanceled():
+                return
+            cur_tags = _tolist(all_tags.get(book_id))
+            subj     = _tolist(all_subj.get(book_id))
+            clasif   = _tolist(all_clasif.get(book_id))
+            union    = cur_tags + clasif + subj
+            new_list, info = clean_tags(union, rules, drop, drop_res)
+
+            tags_changed = new_list != cur_tags
+            need_clear   = has_subjects and bool(subj)
+            if tags_changed or need_clear:
+                if need_clear:
+                    subj_clear[book_id] = True
+                pending.append((book_id, None,
+                                ', '.join(cur_tags), ', '.join(new_list),
+                                new_list, info['unknown']))
+            if i % BATCH == 0:
+                progress.setLabelText(
+                    f'Analysing [{i + 1} / {total}]…  ({len(pending)} to change)')
+                progress.setValue(i)
+                QApplication.processEvents()
+
+        progress.setValue(total)
+        progress.close()
+
+        if not pending:
+            info_dialog(self.gui, 'Fix Tags',
+                        f'No tag changes needed ({total} books checked).', show=True)
+            return
+
+        # Apply directly (no review dialog): every detected change is written.
+        titles = new_api.all_field_for('title', [p[0] for p in pending])
+        confirmed = [(bid, titles.get(bid) or f'Book {bid}', o, n, nl, unk)
+                     for (bid, _t, o, n, nl, unk) in pending]
+
+        confirmed_ids = {bid for (bid, _t, _o, _n, _nl, _u) in confirmed}
+        updates = {bid: nl for (bid, _t, _o, _n, nl, _u) in confirmed}
+        new_api.set_field('tags', updates)
+
+        # empty #subjects for the confirmed books that had content there
+        cleared = 0
+        if has_subjects:
+            subj_updates = {bid: None for bid in confirmed_ids if subj_clear.get(bid)}
+            if subj_updates:
+                new_api.set_field('#subjects', subj_updates)
+                cleared = len(subj_updates)
+
+        # mark books that still contain unrecognised tags
+        review_ids = [bid for (bid, _t, _o, _n, _nl, unk) in confirmed if unk]
+        if review_ids:
+            try:
+                marked = dict(getattr(db.data, 'marked_ids', {}) or {})
+            except Exception:
+                marked = {}
+            for bid in review_ids:
+                marked[bid] = 'revisar_tags'
+            try:
+                db.set_marked_ids(marked)
+            except Exception as e:
+                logger.error(f'Could not set marked ids: {e}')
+
+        refreshed = set(updates) | set(confirmed_ids)
+        self.gui.library_view.model().refresh_ids(list(refreshed))
+        self.gui.status_bar.show_message(
+            f'Tags fixed: {len(updates)} book(s) updated', 3000)
+
+        details = ''
+        for bid, title, old_str, new_str, _nl, unk in confirmed:
+            details += f'"{title}"\n    antes: {old_str}\n    ahora: {new_str}\n'
+            if unk:
+                details += '    sin mapear (conservados): ' + ', '.join(unk) + '\n'
+            details += '\n'
+        msg = f'{len(updates)} book(s) updated.'
+        if cleared:
+            msg += f'\n#subjects vaciado en {cleared} libro(s).'
+        if review_ids:
+            msg += (f'\n{len(review_ids)} book(s) con tags sin mapear '
+                    f'(buscar: marks:revisar_tags).')
+        info_dialog(self.gui, 'Fix Tags', msg, det_msg=details, show=True)

@@ -17,272 +17,413 @@ from __future__ import unicode_literals, division, absolute_import, print_functi
 import re
 import traceback
 
-try:
-    from qt.core import QObject, QThread, pyqtSignal as Signal
-except ImportError:
+def _group_key(db, bid, settings):
+    """Universo si existe; si no, serie. None si no aplica (libro suelto)."""
+    if not settings.get('group_unify', True):
+        return None
+    universe_field = settings.get('universe_field', '#universe')
     try:
-        from qt.QtCore import QObject, QThread, pyqtSignal as Signal
-    except ImportError:
-        from PyQt5.QtCore import QObject, QThread, pyqtSignal as Signal
+        universe = db.field_for(universe_field, bid)
+        universe = (universe or '').strip() if isinstance(universe, str) else (universe or '')
+    except Exception:
+        universe = ''
+    if universe:
+        return ('U', universe)
+    try:
+        series = (db.field_for('series', bid) or '').strip()
+    except Exception:
+        series = ''
+    if series:
+        return ('S', series)
+    return None
 
 
-def start_ml_classify_threaded(gui, book_ids, settings):
-    worker = MLClassifyWorker(gui, book_ids, settings)
-    thread = QThread()
-    worker.moveToThread(thread)
-    thread.started.connect(worker.run)
-    worker.finished.connect(thread.quit)
-    return worker, thread
+def plan_classify_chunks(gui, book_ids, settings):
+    """
+    Agrupa book_ids por serie/universo (lectura rapida en el hilo de la GUI) y
+    reparte el trabajo en chunks -uno por ThreadedJob-, empaquetando varios
+    grupos pequenos juntos para que ningun job sea demasiado chico ni
+    demasiado grande:
 
+      - Cada serie/universo se mantiene ENTERA dentro de un mismo chunk (el
+        consenso de grupo necesita verla completa), pero un chunk puede
+        contener VARIAS series/universos pequenos juntos.
+      - El tamano de referencia es `ai_batch_ref` (el "libros por llamada"
+        configurado para el rescate con IA en la nube, reutilizado aqui solo
+        como unidad de medida -esta clasificacion es local, no llama a
+        ningun proveedor-). Los chunks apuntan a ese tamano y no superan
+        2x, salvo que una sola serie/universo ya sea mas grande que eso
+        (entonces ocupa su propio chunk igualmente, no se puede partir sin
+        romper el consenso).
+      - Los libros sueltos (sin serie/universo) rellenan el hueco de los
+        chunks de grupos y, lo que sobre, se reparte en chunks de ese mismo
+        tamano maximo, sin consenso entre ellos.
 
-class MLClassifyWorker(QObject):
-    progress = Signal(int, str)
-    finished = Signal(object)
+    Devuelve una lista de chunks: [{'subgroups', 'loose_ids', 'book_ids',
+    'label'}, ...]. `subgroups` es una lista de listas de book_id (cada una
+    una serie/universo completa); `loose_ids` son libros sin grupo metidos en
+    ese mismo job para no desperdiciar hueco.
+    """
+    db = gui.current_db.new_api
+    groups = {}
+    standalone = []
+    for bid in book_ids:
+        gkey = _group_key(db, bid, settings)
+        if gkey is not None:
+            groups.setdefault(gkey, []).append(bid)
+        else:
+            standalone.append(bid)
 
-    def __init__(self, gui, book_ids, settings):
-        super(MLClassifyWorker, self).__init__()
-        self.gui       = gui
-        self.book_ids  = book_ids
-        self.s         = settings
-        self._cancelled = False
+    batch = int(settings.get('ai_batch_ref', 10) or 10)
+    target_max = max(batch, 1) * 2
 
-    def run(self):
-        db = self.gui.current_db.new_api
-        s = self.s
+    group_items = sorted(groups.items(), key=lambda kv: -len(kv[1]))
+    standalone_pool = list(standalone)
 
-        from calibre_plugins.book_classifier.ml_classifier import MLClassifier
-        try:
-            clf = MLClassifier(default_threshold=s.get('threshold', 0.55))
-        except Exception as e:
-            traceback.print_exc()
-            self.finished.emit({'failed': True, 'error': str(e),
-                                'total': len(self.book_ids), 'writes_by_field': {},
-                                'classified': 0, 'errors': 0, 'book_details': []})
+    chunks = []
+    cur_groups, cur_labels, cur_size = [], [], 0
+
+    def _label_for(labels, size):
+        if not labels:
+            return 'Sueltos ({} libros)'.format(size)
+        if len(labels) <= 3:
+            return ' + '.join(labels)
+        return '{} series/universos ({} libros)'.format(len(labels), size)
+
+    def _take_filler(room):
+        if room <= 0 or not standalone_pool:
+            return []
+        part = standalone_pool[:room]
+        del standalone_pool[:len(part)]
+        return part
+
+    def _flush():
+        nonlocal cur_groups, cur_labels, cur_size
+        if not cur_groups:
             return
+        filler = _take_filler(target_max - cur_size)
+        chunks.append({
+            'subgroups': list(cur_groups),
+            'loose_ids': filler,
+            'book_ids': [bid for g in cur_groups for bid in g] + filler,
+            'label': _label_for(cur_labels, cur_size + len(filler)),
+        })
+        cur_groups, cur_labels, cur_size = [], [], 0
 
-        lib_field   = s.get('library_field', 'tags')
-        mood_field  = s.get('mood_field', 'tags')
-        lib_prefix  = s.get('library_prefix', 'Biblioteca: ')
-        mood_prefix = s.get('mood_prefix', 'Tema: ')
-        threshold   = s.get('threshold', 0.55)
-        write_lib   = s.get('write_library', True)
-        write_mood  = s.get('write_moods', True)
-        overwrite   = s.get('overwrite', True)
-        source_fields = s.get('source_fields', ['title', 'comments', 'tags'])
-        use_subtitle   = s.get('use_subtitle', False)
-        subtitle_field = s.get('subtitle_field', '#subtitle')
+    for gkey, ids in group_items:
+        label = '{}: {}'.format('Universo' if gkey[0] == 'U' else 'Serie', gkey[1])
+        if cur_groups and cur_size + len(ids) > target_max:
+            _flush()
+        cur_groups.append(ids)
+        cur_labels.append(label)
+        cur_size += len(ids)
+        if cur_size >= target_max:
+            _flush()
+    _flush()
 
-        unify          = s.get('group_unify', True)
-        unify_moods    = s.get('group_unify_moods', True)
-        universe_field = s.get('universe_field', '#universe')
+    for i in range(0, len(standalone_pool), target_max):
+        part = standalone_pool[i:i + target_max]
+        chunks.append({
+            'subgroups': [], 'loose_ids': part, 'book_ids': part,
+            'label': 'Sueltos {}-{}'.format(i + 1, i + len(part)),
+        })
+    return chunks
 
-        author_fallback  = s.get('author_fallback', True)
-        author_dominance = s.get('author_dominance', 0.6)
-        author_min_books = s.get('author_min_books', 3)
 
-        results = {
-            'total': len(self.book_ids), 'classified': 0, 'errors': 0,
-            'cancelled': False, 'writes_by_field': {}, 'dist': {},
-            'unified_books': 0, 'group_count': 0, 'author_resolved': 0,
-            'book_details': [],
-        }
+def run_classify_chunk_task(db, subgroups, loose_ids, settings, label,
+                            log=None, abort=None, notifications=None):
+    """
+    Tarea de ThreadedJob para UN job de clasificacion local. `subgroups` es
+    una lista de listas de book_id -cada una una serie/universo COMPLETA-: el
+    consenso de grupo (Nivel 2) se calcula por separado DENTRO de cada una,
+    nunca mezclando series distintas aunque compartan el mismo job.
+    `loose_ids` son libros sin grupo metidos en el mismo job para no
+    desperdiciar hueco: cada uno conserva su propia prediccion individual,
+    sin consenso. El consenso de autor (Nivel 3) se hace aparte, en una
+    pasada final tras acabar TODOS los jobs (ver `run_author_fallback_task`).
 
-        # ── PASADA 1: clasificar libro a libro ────────────────────────────────
-        per_book = {}          # bid -> dict
-        groups   = {}          # group_key -> [bid, ...]
-        for i, bid in enumerate(self.book_ids, start=1):
-            if self._cancelled:
-                results['cancelled'] = True
-                break
-            try:
-                mi = db.get_proxy_metadata(bid)
-                title = mi.title or 'Sin título'
-                self.progress.emit(i, title)
+    Lee la base de datos (permitido desde un ThreadedJob: leer esta bien, lo
+    que hay que evitar desde este hilo es escribir en la BD o tocar objetos
+    Qt -eso se hace en el callback, en el hilo de la GUI-).
+    """
+    import re
+    import traceback as _tb
+    from calibre_plugins.book_classifier.ml_classifier import MLClassifier
 
-                comments = re.sub(r'<[^>]+>', ' ', mi.comments) if mi.comments else ''
-                tags     = list(mi.tags) if mi.tags else []
-                series   = (mi.series or '').strip()
-                authors  = [a for a in (list(mi.authors) if mi.authors else []) if a]
+    # El ThreadedJob puede recibir la BD antigua (LibraryDatabase); los metodos
+    # get_proxy_metadata/field_for viven en la API nueva (Cache). Normalizamos.
+    db = getattr(db, 'new_api', db)
 
-                parts = []
-                if 'title' in source_fields:    parts.append(title)
-                if 'tags' in source_fields:     parts.extend(tags)
-                if 'comments' in source_fields: parts.append(comments)
-                if 'series' in source_fields:   parts.append(series)
-                if use_subtitle:
-                    try:
-                        sub = db.field_for(subtitle_field, bid)
-                        sub = (sub or '').strip() if isinstance(sub, str) else (sub or '')
-                    except Exception:
-                        sub = ''
-                    if sub:
-                        parts.append(sub)
-                text = ' '.join(p for p in parts if p)
+    s = settings
+    all_ids = [bid for g in subgroups for bid in g] + list(loose_ids)
+    result = {
+        'label': label, 'total': len(all_ids), 'classified': 0, 'errors': 0,
+        'writes_by_field': {}, 'dist': {}, 'unified_books': 0,
+        'group_count': 0, 'book_details': [], 'failed': False, 'error': '',
+        'first_error': '', 'error_samples': [],
+    }
 
-                res = clf.classify(text, threshold=threshold)
+    try:
+        clf = MLClassifier(default_threshold=s.get('threshold', 0.55))
+    except Exception as e:
+        result['failed'] = True
+        result['error'] = str(e)
+        return result
 
-                # clave de grupo: universo manda; si no, serie
-                gkey = None
-                if unify:
-                    universe = ''
-                    try:
-                        uv = db.field_for(universe_field, bid)
-                        universe = (uv or '').strip() if isinstance(uv, str) else (uv or '')
-                    except Exception:
-                        universe = ''
-                    if universe:
-                        gkey = ('U', universe)
-                    elif series:
-                        gkey = ('S', series)
+    lib_field   = s.get('library_field', 'tags')
+    mood_field  = s.get('mood_field', 'tags')
+    lib_prefix  = s.get('library_prefix', 'Biblioteca: ')
+    mood_prefix = s.get('mood_prefix', 'Tema: ')
+    threshold   = s.get('threshold', 0.55)
+    write_lib   = s.get('write_library', True)
+    write_mood  = s.get('write_moods', True)
+    overwrite   = s.get('overwrite', True)
+    source_fields  = s.get('source_fields', ['title', 'comments', 'tags'])
+    use_subtitle   = s.get('use_subtitle', False)
+    subtitle_field = s.get('subtitle_field', '#subtitle')
+    unify_moods    = s.get('group_unify_moods', True)
 
-                per_book[bid] = {
-                    'title': title, 'tags': tags, 'authors': authors,
-                    'library': res['library'], 'confidence': res['confidence'],
-                    'uncertain': res['uncertain'], 'moods': res['moods'], 'gkey': gkey,
-                }
-                if gkey is not None:
-                    groups.setdefault(gkey, []).append(bid)
-            except Exception as e:
-                print("ML ERROR (pasada 1) libro {}: {}".format(bid, e))
-                traceback.print_exc()
-                results['errors'] += 1
+    # ── Pasada 1: clasificacion individual de TODOS los libros del job ───────
+    per_book = {}
+    total = len(all_ids)
+    for i, bid in enumerate(all_ids, 1):
+        if abort is not None and abort.is_set():
+            break
+        try:
+            mi = db.get_proxy_metadata(bid)
+            title = mi.title or 'Sin titulo'
+            if notifications is not None:
+                try:
+                    notifications.put((i / float(max(total, 1)), '{}: {}'.format(label, title)))
+                except Exception:
+                    pass
 
-        # ── NIVEL 2: consenso por grupo (serie / universo) ────────────────────
-        group_lib   = {}
-        group_moods = {}
-        for gkey, bids in groups.items():
-            score = {}
-            for bid in bids:
-                pb = per_book[bid]
-                if pb['library'] and not pb['uncertain']:
-                    score[pb['library']] = score.get(pb['library'], 0.0) + pb['confidence']
-            if score:
-                group_lib[gkey] = max(score, key=lambda k: score[k])
-            if unify_moods:
-                union = []
-                for bid in bids:
-                    for m in per_book[bid]['moods']:
-                        if m not in union:
-                            union.append(m)
-                group_moods[gkey] = union
-        results['group_count'] = len(group_lib)
+            comments = re.sub(r'<[^>]+>', ' ', mi.comments) if mi.comments else ''
+            tags     = list(mi.tags) if mi.tags else []
+            series   = (mi.series or '').strip()
+            authors  = [a for a in (list(mi.authors) if mi.authors else []) if a]
 
-        # ── NIVEL 3: tabla de librería dominante por autor ────────────────────
-        # Se construye con lo ya resuelto con fiabilidad (individual confiable o
-        # consenso de grupo), ponderando por confianza.
-        author_scores = {}   # autor -> { librería: peso }
-        if author_fallback:
-            for bid, pb in per_book.items():
-                resolved = None
-                gkey = pb['gkey']
-                if gkey is not None and gkey in group_lib:
-                    resolved = group_lib[gkey]
-                    weight = 1.0
-                elif pb['library'] and not pb['uncertain']:
-                    resolved = pb['library']
-                    weight = pb['confidence']
-                if resolved:
-                    for a in pb['authors']:
-                        d = author_scores.setdefault(a, {})
-                        d[resolved] = d.get(resolved, 0.0) + weight
+            parts = []
+            if 'title' in source_fields:    parts.append(title)
+            if 'tags' in source_fields:     parts.extend(tags)
+            if 'comments' in source_fields: parts.append(comments)
+            if 'series' in source_fields:   parts.append(series)
+            if use_subtitle:
+                try:
+                    sub = db.field_for(subtitle_field, bid)
+                    sub = (sub or '').strip() if isinstance(sub, str) else (sub or '')
+                except Exception:
+                    sub = ''
+                if sub:
+                    parts.append(sub)
+            text = ' '.join(p for p in parts if p)
 
-        def author_choice(authors):
-            """Librería dominante entre los autores del libro, o None."""
-            for a in authors:
-                d = author_scores.get(a)
-                if not d:
+            res = clf.classify(text, threshold=threshold)
+            per_book[bid] = {
+                'title': title, 'tags': tags, 'authors': authors,
+                'library': res['library'], 'confidence': res['confidence'],
+                'uncertain': res['uncertain'], 'moods': res['moods'],
+            }
+        except Exception as e:
+            tb = _tb.format_exc()
+            msg = '{}: {}'.format(type(e).__name__, e)
+            print('ML ERROR (chunk {}) libro {}: {}'.format(label, bid, msg))
+            print(tb)
+            result['errors'] += 1
+            if not result['first_error']:
+                result['first_error'] = 'libro {}: {}\n{}'.format(bid, msg, tb)
+            if len(result['error_samples']) < 8:
+                result['error_samples'].append('libro {}: {}'.format(bid, msg))
+
+    writes = result['writes_by_field']
+    lib_prefix_eff  = lib_prefix if lib_field == 'tags' else ''
+    mood_prefix_eff = mood_prefix if mood_field == 'tags' else ''
+
+    def _emit(bid, pb, library, uncertain, moods, tier):
+        if library is None:
+            lib_value = lib_prefix_eff + '(sin datos)'
+        elif uncertain:
+            lib_value = lib_prefix_eff + library + ' [REVISAR]'
+        else:
+            lib_value = lib_prefix_eff + library
+
+        new_by_field = {}
+        if write_lib:
+            new_by_field.setdefault(lib_field, []).append(lib_value)
+        if write_mood and moods:
+            new_by_field.setdefault(mood_field, []).extend(mood_prefix_eff + m for m in moods)
+
+        for field, newvals in new_by_field.items():
+            prev = list(pb['tags']) if field == 'tags' else db.field_for(field, bid)
+            own_prefixes = []
+            if write_lib and field == lib_field:
+                own_prefixes.append(lib_prefix_eff)
+            if write_mood and field == mood_field:
+                own_prefixes.append(mood_prefix_eff)
+            merged = _merge_prefixed(newvals, prev, field, own_prefixes, overwrite)
+            writes.setdefault(field, {})[bid] = merged
+
+        key = library if (library and not uncertain) else '(revisar/sin datos)'
+        result['dist'][key] = result['dist'].get(key, 0) + 1
+        result['classified'] += 1
+        if len(result['book_details']) < 400:
+            result['book_details'].append({
+                'title': pb['title'], 'library': library,
+                'confidence': round(pb['confidence'], 3),
+                'uncertain': uncertain, 'moods': moods, 'tier': tier,
+            })
+
+    # ── Nivel 2: consenso de grupo, POR CADA subgrupo por separado ───────────
+    for group_ids in subgroups:
+        score = {}
+        for bid in group_ids:
+            pb = per_book.get(bid)
+            if pb and pb['library'] and not pb['uncertain']:
+                score[pb['library']] = score.get(pb['library'], 0.0) + pb['confidence']
+        consensus = max(score, key=lambda k: score[k]) if score else None
+        if consensus is not None:
+            result['group_count'] += 1
+
+        moods_union = []
+        if unify_moods:
+            for bid in group_ids:
+                pb = per_book.get(bid)
+                if not pb:
                     continue
-                total = sum(d.values())
-                best = max(d, key=lambda k: d[k])
-                # nº de libros ~ aproximado por nº de entradas con ese peso; exigimos
-                # mayoría clara y un mínimo de señal.
-                if total >= author_min_books and (d[best] / total) >= author_dominance:
-                    return best
-            return None
+                for m in pb['moods']:
+                    if m not in moods_union:
+                        moods_union.append(m)
 
-        # ── PASADA 2: decidir y construir escrituras ──────────────────────────
-        writes = results['writes_by_field']
-        for bid, pb in per_book.items():
-            try:
-                gkey = pb['gkey']
-                library   = pb['library']
-                uncertain = pb['uncertain']
-                moods     = pb['moods']
-                source_tier = 'individual'
+        for bid in group_ids:
+            pb = per_book.get(bid)
+            if pb is None:
+                continue
+            library, uncertain = pb['library'], pb['uncertain']
+            moods = moods_union if unify_moods else pb['moods']
+            tier = 'individual'
+            if consensus is not None:
+                if consensus != library or uncertain:
+                    result['unified_books'] += 1
+                library, uncertain, tier = consensus, False, 'grupo'
+            _emit(bid, pb, library, uncertain, moods, tier)
 
-                # nivel 2
-                if gkey is not None and gkey in group_lib:
-                    consensus = group_lib[gkey]
-                    if consensus != library or uncertain:
-                        results['unified_books'] += 1
-                    library = consensus
-                    uncertain = False
-                    source_tier = 'grupo'
-                # nivel 3 (solo si sigue dudoso)
-                elif uncertain and author_fallback:
-                    choice = author_choice(pb['authors'])
-                    if choice:
-                        library = choice
-                        uncertain = False
-                        source_tier = 'autor'
-                        results['author_resolved'] += 1
+    # ── Libros sueltos metidos en este job: sin consenso, cada uno el suyo ───
+    for bid in loose_ids:
+        pb = per_book.get(bid)
+        if pb is None:
+            continue
+        _emit(bid, pb, pb['library'], pb['uncertain'], pb['moods'], 'individual')
 
-                if gkey is not None and unify_moods and gkey in group_moods:
-                    moods = group_moods[gkey]
+    return result
 
-                # El prefijo ('Biblioteca: ', 'Tema: ') solo tiene sentido si el
-                # campo destino es 'tags' (compartido con otras etiquetas): ahí
-                # hace falta para distinguir lo que escribió el plugin. Si el
-                # campo es una columna dedicada (p.ej. #biblioteca), el valor
-                # se guarda limpio, sin el literal delante.
-                lib_prefix_eff  = lib_prefix if lib_field == 'tags' else ''
-                mood_prefix_eff = mood_prefix if mood_field == 'tags' else ''
 
-                if library is None:
-                    lib_value = lib_prefix_eff + '(sin datos)'
-                elif uncertain:
-                    lib_value = lib_prefix_eff + library + ' [REVISAR]'
-                else:
-                    lib_value = lib_prefix_eff + library
+_REVISAR_SUFFIX = ' [REVISAR]'
 
-                new_by_field = {}
-                if write_lib:
-                    new_by_field.setdefault(lib_field, []).append(lib_value)
-                if write_mood and moods:
-                    new_by_field.setdefault(mood_field, []).extend(mood_prefix_eff + m for m in moods)
 
-                for field, newvals in new_by_field.items():
-                    prev = list(pb['tags']) if field == 'tags' else db.field_for(field, bid)
-                    # Prefijos "propios" de este campo: si librería y temas
-                    # van a columnas distintas, cada fusión solo debe tocar
-                    # los valores que le corresponden a ELLA, no a la otra.
-                    own_prefixes = []
-                    if write_lib and field == lib_field:
-                        own_prefixes.append(lib_prefix_eff)
-                    if write_mood and field == mood_field:
-                        own_prefixes.append(mood_prefix_eff)
-                    merged = _merge_prefixed(newvals, prev, field, own_prefixes, overwrite)
-                    writes.setdefault(field, {})[bid] = merged
+def _parse_current_library(lib_field, val, lib_prefix_eff):
+    """Devuelve (libreria_o_None, incierto_bool) leyendo el valor YA escrito
+    del campo de libreria. `val` puede ser lista/tupla (tags o columna
+    multivalor) o cadena (columna de texto dedicada)."""
+    if lib_field == 'tags' or isinstance(val, (list, tuple)):
+        for v in (val or []):
+            v = str(v)
+            if v.startswith(lib_prefix_eff):
+                rest = v[len(lib_prefix_eff):]
+                if rest.endswith(_REVISAR_SUFFIX):
+                    return (rest[:-len(_REVISAR_SUFFIX)].strip() or None), True
+                if rest == '(sin datos)':
+                    return None, True
+                return rest, False
+        return None, True
+    v = str(val or '').strip()
+    if not v:
+        return None, True
+    rest = v[len(lib_prefix_eff):] if v.startswith(lib_prefix_eff) else v
+    if rest.endswith(_REVISAR_SUFFIX):
+        return (rest[:-len(_REVISAR_SUFFIX)].strip() or None), True
+    if rest == '(sin datos)':
+        return None, True
+    return rest, False
 
-                key = library if (library and not uncertain) else '(revisar/sin datos)'
-                results['dist'][key] = results['dist'].get(key, 0) + 1
-                results['classified'] += 1
 
-                if len(results['book_details']) < 400:
-                    results['book_details'].append({
-                        'title': pb['title'], 'library': library,
-                        'confidence': round(pb['confidence'], 3),
-                        'uncertain': uncertain, 'moods': moods, 'tier': source_tier,
-                    })
-            except Exception as e:
-                print("ML ERROR (pasada 2) libro {}: {}".format(bid, e))
-                traceback.print_exc()
-                results['errors'] += 1
+def run_author_fallback_task(db, book_ids, settings, log=None, abort=None, notifications=None):
+    """
+    Nivel 3 (aparte, tras acabar TODOS los chunks): para los libros que sigan
+    '[REVISAR]'/'(sin datos)' en el campo de libreria, mira que libreria
+    domina entre los OTROS libros del mismo autor (dentro del mismo lote
+    `book_ids`) que ya quedaron resueltos -leyendo la BD, ya actualizada por
+    los chunks anteriores- y si hay mayoria clara se la asigna.
+    """
+    db = getattr(db, 'new_api', db)
+    s = settings
+    result = {
+        'total': 0, 'author_resolved': 0, 'writes_by_field': {},
+        'book_details': [], 'failed': False, 'error': '',
+    }
+    if not s.get('author_fallback', True):
+        return result
 
-        self.finished.emit(results)
+    lib_field  = s.get('library_field', 'tags')
+    lib_prefix = s.get('library_prefix', 'Biblioteca: ')
+    overwrite  = s.get('overwrite', True)
+    dominance  = s.get('author_dominance', 0.6)
+    min_books  = s.get('author_min_books', 3)
+    lib_prefix_eff = lib_prefix if lib_field == 'tags' else ''
 
-    def cancel(self):
-        self._cancelled = True
+    author_counts = {}
+    pending = []
+    for bid in book_ids:
+        if abort is not None and abort.is_set():
+            break
+        try:
+            authors = [a for a in (list(db.field_for('authors', bid) or [])) if a]
+        except Exception:
+            authors = []
+        try:
+            val = db.field_for(lib_field, bid)
+        except Exception:
+            val = None
+        lib, uncertain = _parse_current_library(lib_field, val, lib_prefix_eff)
+        if lib and not uncertain:
+            for a in authors:
+                d = author_counts.setdefault(a, {})
+                d[lib] = d.get(lib, 0) + 1
+        elif uncertain:
+            pending.append((bid, authors))
+
+    result['total'] = len(pending)
+    writes = result['writes_by_field']
+    for bid, authors in pending:
+        if abort is not None and abort.is_set():
+            break
+        choice = None
+        for a in authors:
+            d = author_counts.get(a)
+            if not d:
+                continue
+            total_a = sum(d.values())
+            best = max(d, key=lambda k: d[k])
+            if total_a >= min_books and (d[best] / float(total_a)) >= dominance:
+                choice = best
+                break
+        if not choice:
+            continue
+        try:
+            title = db.field_for('title', bid) or ''
+        except Exception:
+            title = ''
+        lib_value = lib_prefix_eff + choice
+        prev = (list(db.field_for(lib_field, bid) or [])
+                if lib_field == 'tags' else db.field_for(lib_field, bid))
+        merged = _merge_prefixed([lib_value], prev, lib_field, [lib_prefix_eff], overwrite)
+        writes.setdefault(lib_field, {})[bid] = merged
+        result['author_resolved'] += 1
+        if len(result['book_details']) < 400:
+            result['book_details'].append({
+                'title': title, 'library': choice, 'confidence': 0.0,
+                'uncertain': False, 'moods': [], 'tier': 'autor',
+            })
+    return result
 
 
 def _merge_prefixed(new_values, existing, field, prefixes, overwrite):

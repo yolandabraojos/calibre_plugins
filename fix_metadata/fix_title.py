@@ -88,6 +88,22 @@ _BRACKET_INDEX_RE = re.compile(
     re.IGNORECASE,
 )
 
+# S - "[Series Name #N] - Title"  (index inside brackets WITH a "#"; dash sep)
+#   "[Jack Morgan #05] - Private Berlin"
+_BRACKET_HASH_PREFIX_RE = re.compile(
+    r'^\[([^\]#]+?)\s*#(\d+(?:\.\d+)?)\]\s*-\s*(.+?)\s*$'
+)
+
+# T - "(Series Name N) Title"  (plain parenthetical PREFIX, no "#"/keyword)
+#   "(For His Pleasure 11) His Every Word"
+#   "(Marco Didio Falco 10) A Los Leones(c.1)"
+#   A lookahead requires at least one letter inside the parens so a bare
+#   year like "(2012) Evie Undercover" is correctly left alone (that is a
+#   publication date, not a series).
+_PAREN_PREFIX_NUM_RE = re.compile(
+    r'^\((?=[^)]*[A-Za-zÀ-ÿ])([^)]+?)\s+(\d+(?:\.\d+)?)\)\s*-?\s*(.+?)\s*$'
+)
+
 # C – "(lang) Title - Series Name NN"  (language prefix, plain number)
 _LANG_PREFIX_DASH_RE = re.compile(
     r'^\(([a-z]{2,3})\)\s+(.*)\s+-\s+(.+?)\s+(\d{1,4}(?:\.\d+)?)\s*$',
@@ -226,6 +242,9 @@ def find_series_in_title(title, language=None, author=None, author_sort=None):
         e.g. ``Laundry Lady's Love (Ladies of Sanctuary House Book 1)``
     I)  ``Series Name [N] - Title``           ← calibre bracket-index format
         (optional trailing lang code ignored)
+    S)  ``[Series Name #N] - Title``          ← bracketed prefix WITH "#"
+    T)  ``(Series Name N) Title``             ← parenthetical prefix, no "#"
+        (a bare year like "(2012) Title" is left alone, not a series)
     C)  ``(lang) Title - Series Name NN``     ← language-code prefix
     D)  ``Title - Series Name NN (lang)``     ← language-code suffix
         C and D only matched when *language* is provided and matches.
@@ -301,7 +320,8 @@ def find_series_in_title(title, language=None, author=None, author_sort=None):
     if m:
         series = _normalize_series_name(m.group(2).strip())
         index  = _to_index(m.group(3))
-        if m.group(1).strip() and _is_valid_series(series):
+        if (m.group(1).strip() and _is_valid_series(series)
+                and not _looks_like_year(index)):
             return series, index, None
 
     # -- N  "Title: [A] Series [descriptor] Book N" --------------------------
@@ -323,6 +343,24 @@ def find_series_in_title(title, language=None, author=None, author_sort=None):
 
     # -- I -------------------------------------------------------------------
     m = _BRACKET_INDEX_RE.match(t)
+    if m:
+        series = m.group(1).strip()
+        index  = float(m.group(2))
+        clean  = m.group(3).strip()
+        if _is_valid_series(series) and clean and not _looks_like_year(index):
+            return series, index, None
+
+    # -- S  "[Series Name #N] - Title" ---------------------------------------
+    m = _BRACKET_HASH_PREFIX_RE.match(t)
+    if m:
+        series = m.group(1).strip()
+        index  = float(m.group(2))
+        clean  = m.group(3).strip()
+        if _is_valid_series(series) and clean and not _looks_like_year(index):
+            return series, index, None
+
+    # -- T  "(Series Name N) Title"  (no "#") --------------------------------
+    m = _PAREN_PREFIX_NUM_RE.match(t)
     if m:
         series = m.group(1).strip()
         index  = float(m.group(2))
@@ -539,29 +577,39 @@ def make_clean_title(title, series=None, index=None, language=None,
     t = title.strip()
     idx_re = r'\d+(?:\.\d+)?'
 
-    # ── Language code ───────────────────────────────────────────────────── #
+    # -- Language code -------------------------------------------------------
     if language:
         lang_pat = re.escape(language.strip())
         t = re.sub(r'^\(' + lang_pat + r'\)\s+',   '', t, flags=re.IGNORECASE).strip()
         t = re.sub(r'\s*\(' + lang_pat + r'\)\s*$', '', t, flags=re.IGNORECASE).strip()
 
-    # ── Edition note "(Spanish Edition)" / bare language code "(spa)" ────── #
+    # -- Edition note "(Spanish Edition)" / bare language code "(spa)" ------
     # Stripped unconditionally: these never belong in the clean title.
     t = re.sub(r'\s*\([A-Za-z][A-Za-z ]*\bEdition\)\s*$', '', t, flags=re.IGNORECASE).strip()
     t = re.sub(r'\s*\([a-z]{2,3}\)\s*$', '', t).strip()
     t = re.sub(r'^\([a-z]{2,3}\)\s+', '', t).strip()
 
-    # ── Author sort prefix  "AuthorSort - " ─────────────────────────────── #
+    # -- Bare publication year "(YYYY)" --------------------------------------
+    # Stripped unconditionally: a lone 4-digit number in parens is a date,
+    # never a series (mirrors _looks_like_year's >=1000 heuristic).
+    t = re.sub(r'^\(\d{4}\)\s+', '', t).strip()
+    t = re.sub(r'\s*\(\d{4}\)\s*$', '', t).strip()
+
+    # -- Copy/version marker "(c.1)", "(c.2)", ... ---------------------------
+    # Stripped unconditionally: a leftover duplicate-copy marker, not content.
+    t = re.sub(r'\s*\(c\.?\s*\d+\)\s*$', '', t, flags=re.IGNORECASE).strip()
+
+    # -- Author sort prefix  "AuthorSort - " ---------------------------------
     if author_sort:
         t = re.sub(r'^' + re.escape(author_sort.strip()) + r'\s+-\s+',
                    '', t, flags=re.IGNORECASE).strip()
 
-    # ── Author display prefix  "Author - " ──────────────────────────────── #
+    # -- Author display prefix  "Author - " ----------------------------------
     if author:
         t = re.sub(r'^' + re.escape(author.strip()) + r'\s+-\s+',
                    '', t, flags=re.IGNORECASE).strip()
 
-    # ── Author as SUFFIX / "by Author" / "(Author)" ─────────────────────── #
+    # -- Author as SUFFIX / "by Author" / "(Author)" -------------------------
     # Anchored to the known author(s): only text that exactly equals the author
     # name is removed, so legitimate titles are never touched.  Handles the
     # display form and the "Last, First" -> "First Last" variant.
@@ -581,21 +629,21 @@ def make_clean_title(title, series=None, index=None, language=None,
             continue
         _seen_auth.add(_k)
         _p = re.escape(_nm)
-        # "Title - Author"  /  "Title – Author"  /  "Title — Author"  (suffix)
+        # "Title - Author"  /  "Title - Author"  /  "Title -- Author"  (suffix)
         t = re.sub(r'\s*[-–—]\s*' + _p + r'\s*$', '', t, flags=re.IGNORECASE).strip()
         # "Title by Author"
         t = re.sub(r'\s+by\s+' + _p + r'\s*$', '', t, flags=re.IGNORECASE).strip()
         # "Title (Author)"
         t = re.sub(r'\s*\(\s*' + _p + r'\s*\)\s*$', '', t, flags=re.IGNORECASE).strip()
 
-    # ── Leading index with no series  (Pattern L: "Author - NN Title") ───── #
+    # -- Leading index with no series  (Pattern L: "Author - NN Title") ------
     # After the author prefix is stripped, a 1-3 digit leading number is the
     # series index, not part of the title.  Only stripped when an index was
     # found but no series name (so normal titles keep any leading number).
     if index is not None and not series:
         t = re.sub(r'^\d{1,3}(?:\.\d+)?\s+', '', t).strip()
 
-    # ── Series ──────────────────────────────────────────────────────────── #
+    # -- Series ---------------------------------------------------------------
     if series:
         name = re.escape(series.strip())
         art   = r'(?:the\s+|a\s+|an\s+|la\s+|el\s+|los\s+|las\s+|serie\s+|series\s+)?'
@@ -604,6 +652,12 @@ def make_clean_title(title, series=None, index=None, language=None,
         idx_w = _NUM
 
         # PREFIX forms (most specific first)
+        # "[Series #N] - "  (Pattern S: bracket + hash prefix)
+        t = re.sub(r'^\[' + s_pat + r'\s*#' + idx_re + r'\]\s*-\s*',
+                   '', t, flags=re.IGNORECASE).strip()
+        # "(Series N) "  (Pattern T: plain parenthetical prefix, no "#")
+        t = re.sub(r'^\(' + s_pat + r'\s+' + idx_re + r'\)\s*-?\s*',
+                   '', t, flags=re.IGNORECASE).strip()
         t = re.sub(r'^\[' + s_pat + r'\s+' + idx_re + r'\]\s*[-•·]\s*',
                    '', t, flags=re.IGNORECASE).strip()
         t = re.sub(r'^' + s_pat + r'\s*\[' + idx_re + r'\]\s*-\s*',
@@ -644,7 +698,7 @@ def make_clean_title(title, series=None, index=None, language=None,
         t = re.sub(r'\s*\[' + s_pat + r'\s+' + idx_re + r'\]\s*',
                    '', t, flags=re.IGNORECASE).strip()
 
-    # ── Subtitle  "(subtitle)"  (Pattern G) ─────────────────────────────── #
+    # -- Subtitle  "(subtitle)"  (Pattern G) ----------------------------------
     if subtitle:
         t = re.sub(r'\s*\(' + re.escape(subtitle.strip()) + r'\)\s*$',
                    '', t, flags=re.IGNORECASE).strip()

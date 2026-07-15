@@ -1,6 +1,7 @@
 # ZIP maestros generados (se construyen con build_plugins.py)
 /*.zip
 dist/
+datos_ejemplo/
 
 # Artefactos de Python
 __pycache__/

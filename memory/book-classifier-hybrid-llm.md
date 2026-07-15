@@ -1,0 +1,26 @@
+---
+name: book-classifier-hybrid-llm
+description: Book Classifier — 54% de libros sin biblioteca firme por sesgo a Misterio; plan híbrido con capa de rescate LLM (llm_rescue.py).
+metadata:
+  node_type: memory
+  type: project
+  originSessionId: aeeb9173-e1cb-4583-ace9-e8beba5cc4b5
+---
+
+Diagnóstico sobre clasificacion_resultado.csv (94.534 libros, 2026-07-05): solo el 45,6% queda "Auto"; 43,4% "Por revisar" (conf<0.55, mediana real 0.41) y 11% "Sin datos" (sin sinopsis, pero 99,5% con autor útil). El modelo local (logística TF-IDF) tiene **sesgo de cajón de sastre**: vuelca el 44,6% de TODO en "Misterio·Thriller·Terror" (mitad de baja confianza) — p.ej. mandó ahí Evicted, Diario de un cura rural, Tabucchi, A.M. Homes.
+
+Yolanda eligió modelo **híbrido con API en la nube** (Claude/OpenAI). Plan: el clasificador local resuelve gratis el ~46% de alta confianza; una capa LLM rescata los "Por revisar" + "Sin datos" (~51.404). Los "Sin datos" se clasifican por conocimiento del mundo con solo título+autor.
+
+Prototipo entregado: `llm_rescue.py` (raíz del proyecto y outputs). Stdlib puro (urllib), salida JSON estructurada, opciones cerradas a las 6 librerías o `(revisar)`, caché por hash título+autor, reanudable, adaptadores anthropic/openai, `--dry-run`. Verificado: 0 bytes nulos, compila. Uso: `export ANTHROPIC_API_KEY=...; python3 llm_rescue.py --in clasificacion_resultado.csv --out rescatados.csv --provider anthropic`.
+
+llm_rescue.py v2 (2026-07-05): librerías ampliadas — Fantasía y Ciencia Ficción SEPARADAS (antes unidas por tener solo 4 libros de fantasía etiquetados vs 621 de sci-fi), + No-Ficción. Hace librería + temas en la misma llamada (temas restringidos al vocab de mood_rules.json, 87 tags). Batching (--batch), caché reanudable, modo --diag (prueba 1 llamada y muestra respuesta cruda). Proveedores: anthropic, openai, deepseek, qwen, google, kimi, glm, local(Ollama). Windows: `Rescatar_con_IA.bat` (doble clic, pide clave, elige prueba 50 o completa).
+
+**z.ai/GLM endpoint correcto (comprobado): base `https://api.z.ai/api/paas/v4`** (NO /api/openai/v1, da 404), modelo gratis `glm-4.5-flash` (o glm-4.7-flash), var `ZAI_API_KEY`. Coste rescate ~51.400 libros con temas y batch 20: GLM-4.5-Flash gratis (rate-limited), DeepSeek V4 Flash ~$3,4, gpt-4o-mini ~$4,6, Gemini Flash-Lite ~$9, Kimi ~$20, Haiku ~$34. Suscripción Claude Pro/Max NO incluye API (facturación aparte, crédito prepago).
+
+**Integrado en el plugin (v3.1.0, 2026-07-05):** dos módulos nuevos — `llm_rescue_engine.py` (motor Python puro, urllib, 8 librerías, batching, providers glm/deepseek/openai/google/kimi/qwen/anthropic/local, `test_connection`) y `llm_jobs.py` (worker QThread: detecta residuo por el tag '[REVISAR]'/'(sin datos)', lee la sinopsis REAL de Calibre vía `mi.comments`, batchea, reescribe solo lo que resuelve). En `config.py`: grupo "Rescate con IA en la nube" (proveedor, clave, modelo, batch, min-conf, temas, botón Probar conexión); prefs `llm_*`. En `action.py`: dos entradas de menú "Rescatar con IA los no clasificados (selección/toda)". Clave se guarda en JSONConfig local (plano). Flujo: clasificar local primero → luego rescatar el residuo. Verificado ÍNTEGRO en git y OneDrive, mismo MD5.
+
+**v3.2.0 (2026-07-06):** iterado en pruebas reales dentro de Calibre. Bugs resueltos: (1) proveedor guardado 'local' → conexión rechazada (WinError 10061 a localhost:11434); el diálogo ahora muestra proveedor/servidor usado. (2) respaldo por navegador de Calibre mandaba content-type form-urlencoded → z.ai 500; QUITADO, ahora solo urllib (funciona en Calibre). (3) red pasó a **ThreadedJob** de Calibre (lista de tareas, no bloquea UI, cancelable) — antes QThread+diálogo modal; `run_rescue_job` es defensivo por si Calibre inyecta o no el job. (4) 429 del tier gratis GLM: reintento PACIENTE hasta 5 veces, respeta Retry-After, si no espera 10/20/30/40/50s; +sleep 1s entre lotes. Núcleo extraído a `_do_rescue(db, book_ids, settings, progress, is_cancelled)`, probado con db+motor simulados. Detección de residuo por '[REVISAR]'/'(sin datos)' en el campo de librería (custom o tags). Confirmado en real: rescató Xanth→Fantasía, Oblivion→Ciencia Ficción con temas.
+
+**API ThreadedJob de Calibre (patrón verificado en all_libraries_stats/jobs.py):** `ThreadedJob(type_, desc, func, args_tuple, {}, callback)` + `gui.job_manager.run_threaded_job(job)`. CLAVE: Calibre llama a `func(*args, log=None, abort=None, notifications=None)` — inyecta log/abort/notifications como KEYWORD args (mi primer intento falló y cerraba el plugin por poner el job como primer posicional). Progreso: `notifications.put((frac_0a1, msg))`. Cancelar: `abort.is_set()`. Resultado: la func devuelve dict → `job.result` en callback; `job.failed`/`gui.job_exception(job)`. En book_classifier: `run_rescue_task(gui, book_ids, settings, log,abort,notifications)` en llm_jobs.py llama al núcleo `_do_rescue`; escrituras se aplican en el callback (hilo GUI). v3.2.5.
+
+Ver también [[calibre-threadedjob-callback-thread]] (el callback de ThreadedJob corre en hilo worker, hay que envolverlo con Dispatcher) y [[book-classifier-jobs-per-group]] (rediseño posterior a un job por grupo). Ver [[book-classifier-retrain]] y [[calibre-plugins-repo-local]].

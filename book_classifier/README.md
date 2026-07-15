@@ -65,7 +65,8 @@ propia (p. ej. `#libreria`) desde los ajustes.
 
 ## Reentrenar el modelo
 
-El modelo se entrena fuera de Calibre con tus CSV etiquetados y se exporta a
-`model_weights.json`. Para mejorarlo, reexporta ese fichero y sustitúyelo (en el plugin
-o en la carpeta de configuración de Calibre). Las reglas de tema (`mood_rules.json`)
-se editan a mano sin tocar código.
+El modelo se entrena fuera de Calibre con `scripts/train_book_classifier.py` (lee
+todos los `.csv` de `_datos_ejemplo/` con columna `#libreria` y exporta un
+`model_weights_new.json` de prueba, sin tocar el de producción). Ver
+`scripts/README.md` para el uso completo y cómo promoverlo. Las reglas de tema
+(`mood_rules.json`) se editan a mano sin tocar código.

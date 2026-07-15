@@ -13,10 +13,11 @@ class ActionFixMetadata(InterfaceActionBase):
     '''
     name                    = 'Fix Metadata'
     description             = ('Extracts metadata from EPUB/AZW3 files, cleans '
-                                'series prefixes from titles and normalises author names')
+                                'series prefixes from titles, normalises author names '
+                                'flags low-quality comments/synopses, and canonicalises tags')
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Yolanda Braojos'
-    version                 = (1, 3, 3)
+    version                 = (1, 5, 9)
     minimum_calibre_version = (2, 0, 0)
 
     actual_plugin = 'calibre_plugins.fix_metadata.action:FixMetadataAction'
