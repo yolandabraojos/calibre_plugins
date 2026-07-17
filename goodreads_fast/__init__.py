@@ -31,7 +31,7 @@ class GoodreadsFast(Source):
     description = ('Downloads metadata and covers from Goodreads using the live '
                   'autocomplete search. Finds books by title/author even without ISBN.')
     author = 'Yolanda Braojos (based on Goodreads by Grant Drake)'
-    version = (1, 8, 1)
+    version = (1, 8, 8)
     minimum_calibre_version = (2, 0, 0)
 
     capabilities = frozenset(['identify', 'cover'])
@@ -48,10 +48,22 @@ class GoodreadsFast(Source):
     MAX_SEARCH_QUERIES = 8  # cap autocomplete requests when fanning out variants
 
     # Titles that are not the actual book edition we want.
+    #
+    # NOTE: " / " used to be in this list, on the assumption that a
+    # slash-joined title always means an unrelated bundle of separately
+    # catalogued books. That is wrong for a whole genre: category-romance
+    # 3-in-1 anthologies (Harlequin/Mills & Boon and similar) are legitimately
+    # catalogued on Goodreads as a single book whose own title is exactly
+    # "Umbrella Title: Story One / Story Two / Story Three" -- e.g. "Royals:
+    # For Their Royal Heir: An Heir Fit for a King / The Pregnant Princess /
+    # The Prince's Secret Baby". The blanket marker rejected that candidate
+    # before it was ever scored, even though its head segment ("Royals")
+    # matched the query exactly. The title-similarity gate already rejects a
+    # real mismatch on its own merits, so the marker was pure downside.
     JUNK_MARKERS = ('bundle', 'box set', 'boxset', 'boxed set', 'reading list',
         'guia de lectura', 'guía de lectura', 'resumen y', 'study guide',
         'summary of', 'summary and', 'sparknotes', 'omnibus', 'collection',
-        'audiobook bundle', 'cliffsnotes', ' / ')
+        'audiobook bundle', 'cliffsnotes')
 
     # Parentheticals naming a series or its index -- stripped from titles before
     # matching (e.g. "(Harry Potter, #2)", "(Dune Chronicles Book 1)"). Plain
@@ -132,15 +144,57 @@ class GoodreadsFast(Source):
         'first second third fourth fifth sixth seventh eighth ninth tenth '
         'eleventh twelfth').split())
 
+    # Words that only ever name a volume/part/edition, never real title
+    # content. A segment made up entirely of these (plus numbers/ordinals) --
+    # e.g. "Volume Two", "Book 3" -- must not be trusted as a standalone exact
+    # match: many unrelated books from the very same (or a different) author
+    # reuse the identical omnibus/part label.
+    _VOLUME_WORDS = frozenset((
+        'volume vol book part tome tomo libro band edition installment '
+        'omnibus').split())
+
+    # Canonical digit form for every word in _NUM_WORDS, so "two" and "2" (or
+    # "second" and "2") compare equal regardless of which way Goodreads or the
+    # query happens to spell a volume/part number.
+    _NUM_WORD_TO_DIGIT = dict(zip(
+        'one two three four five six seven eight nine ten eleven twelve '
+        'first second third fourth fifth sixth seventh eighth ninth tenth '
+        'eleventh twelfth'.split(),
+        ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'] * 2))
+
     def _number_tokens(self, text):
         # Extract number/ordinal tokens from the RAW title string. We must not
         # use get_title_tokens here: calibre strips parenthesised text, so a
         # title like "... (Part Two)" would lose the distinguishing "two".
+        # Every match is normalized to a canonical digit string (see
+        # _NUM_WORD_TO_DIGIT) so different spellings of the same number never
+        # look like a mismatch.
         out = set()
         for t in re.split(r'[^0-9a-z]+', (text or '').lower()):
-            if t and (t in self._NUM_WORDS or t.isdigit()):
-                out.add(t)
+            if not t:
+                continue
+            if t.isdigit():
+                out.add(str(int(t)))
+            elif t in self._NUM_WORD_TO_DIGIT:
+                out.add(self._NUM_WORD_TO_DIGIT[t])
+            else:
+                # Ordinal abbreviations glued to their digits: "2nd" -> "2",
+                # "3rd" -> "3", "21st" -> "21". calibre never splits these off,
+                # so without this branch a query like "The 2nd Life" would carry
+                # no number token and could not disambiguate against an unrelated
+                # "The Second Life".
+                mo = re.match(r'^(\d+)(?:st|nd|rd|th)$', t)
+                if mo:
+                    out.add(str(int(mo.group(1))))
         return out
+
+    def _is_structural_segment(self, tokens):
+        """True if a token set carries no real title content -- just a
+        volume/part label like {"volume","two"} or {"book","3"}."""
+        if not tokens:
+            return True
+        return all(t in self._VOLUME_WORDS or t in self._NUM_WORDS or t.isdigit()
+                    for t in tokens)
 
     def _strip_series_paren(self, text):
         """Remove a parenthetical that names a series or gives its index, so it
@@ -286,23 +340,61 @@ class GoodreadsFast(Source):
                 sets.append(s)
         return sets
 
-    def _title_similarity(self, core_sets, cand_set):
-        """Best overlap of the candidate title with any query core.
+    def _cand_title_variants(self, bare_ns):
+        """Token set for each candidate title segment: head (subtitle
+        stripped), tail, any middle segment, and the full bare title.
+        Goodreads often folds a subtitle into bookTitleBare (e.g. "Foo: 50
+        Loving States, Wisconsin", or a series name glued in front like
+        "Series - Volume 2: Subtitle"), which would otherwise make a real
+        match look weak against a short query core -- letting an unrelated,
+        wrongly-authored but identically-titled book win via the
+        unconditional "exact" gate."""
+        segs = re.split(r'\s*:\s*|\s+[-\u2013\u2014]\s+', bare_ns or '')
+        segs = [s.strip() for s in segs if len(s.strip()) >= 3]
+        variants = []
+        seen = set()
+        def add(s, allow_structural=True):
+            # Glue apostrophes exactly like _clean_query_title does for the
+            # query side ("She's" -> "Shes"). calibre's get_title_tokens does
+            # NOT split on/strip an internal apostrophe, so without this the
+            # query token "shes" never equals the candidate token "she's" and
+            # an otherwise-perfect match loses enough similarity to miss the
+            # acceptance gate.
+            s_glued = (s or '').replace("'", '').replace('\u2019', '')
+            toks = frozenset(lower(t) for t in self.get_title_tokens(s_glued, strip_subtitle=False))
+            if not toks or toks in seen:
+                return
+            if not allow_structural and self._is_structural_segment(toks):
+                return
+            seen.add(toks)
+            variants.append(toks)
+        if segs:
+            add(segs[0], allow_structural=False)          # head
+            if len(segs) > 1:
+                add(segs[-1], allow_structural=False)      # tail
+            for mid in segs[1:-1]:                          # any segment(s)
+                add(mid, allow_structural=False)            # in between
+        add(bare_ns)
+        return variants
+
+    def _title_similarity(self, core_sets, cand_variants):
+        """Best overlap of any candidate title segment with any query core.
         sim = |intersection| / max(len(core), len(cand)); exact = a core equals
-        the candidate token set."""
-        best, exact = 0.0, False
-        if not cand_set:
-            return 0.0, False
-        for core in core_sets:
-            inter = len(core & cand_set)
-            if not inter:
+        the segment's token set. On a tie, the larger/more complete segment
+        wins (more specific, e.g. prefer the full title over a bare head)."""
+        best_key = (False, 0.0, 0)
+        for cand_set in cand_variants:
+            if not cand_set:
                 continue
-            sim = inter / float(max(len(core), len(cand_set)))
-            if sim > best:
-                best = sim
-            if core == cand_set:
-                exact = True
-        return best, exact
+            for core in core_sets:
+                inter = len(core & cand_set)
+                if not inter:
+                    continue
+                sim = inter / float(max(len(core), len(cand_set)))
+                key = (core == cand_set, sim, len(cand_set))
+                if key > best_key:
+                    best_key = key
+        return best_key[1], best_key[0]
 
     def _author_similarity(self, qa_tokens, aname):
         """Fraction of the candidate author's tokens present among the query
@@ -316,9 +408,8 @@ class GoodreadsFast(Source):
         """(title_similarity, exact, author_similarity) for one candidate."""
         bare = cand.get('bookTitleBare') or cand.get('title') or ''
         aname = ((cand.get('author') or {}).get('name')) or ''
-        cand_set = frozenset(lower(t) for t in self.get_title_tokens(
-            self._strip_series_paren(bare), strip_subtitle=False))
-        tsim, exact = self._title_similarity(core_sets, cand_set)
+        cand_variants = self._cand_title_variants(self._strip_series_paren(bare))
+        tsim, exact = self._title_similarity(core_sets, cand_variants)
         return tsim, exact, self._author_similarity(qa_tokens, aname)
 
     def _rank_candidates(self, log, results, title, authors):
@@ -349,8 +440,8 @@ class GoodreadsFast(Source):
             if any(j in lower(bare) for j in active_junk):
                 continue
             bare_ns = self._strip_series_paren(bare)
-            cand_set = frozenset(lower(t) for t in self.get_title_tokens(bare_ns, strip_subtitle=False))
-            tsim, exact = self._title_similarity(core_sets, cand_set)
+            cand_variants = self._cand_title_variants(bare_ns)
+            tsim, exact = self._title_similarity(core_sets, cand_variants)
             amatch = self._author_similarity(qa_tokens, aname)
 
             # Acceptance gate: a (near-)exact title, or a good title backed by a
@@ -362,8 +453,14 @@ class GoodreadsFast(Source):
             if exact:
                 score += 6.0
             score += 4.0 * amatch
+            # Volume/part disambiguation: only a real conflict is penalized --
+            # both sides name a number and they disagree (e.g. query "Book 2"
+            # vs candidate "Book One"). A number present on only one side is
+            # not a conflict and must not be penalized (e.g. an unrelated "50"
+            # baked into a Goodreads subtitle the query never mentions).
             c_nums = self._number_tokens(bare_ns)
-            score -= 6.0 * len(q_nums ^ c_nums)   # volume/part disambiguation
+            if q_nums and c_nums and not (q_nums & c_nums):
+                score -= 6.0
             try:
                 rc = int(r.get('ratingsCount') or 0)
             except Exception:
@@ -456,9 +553,12 @@ class GoodreadsFast(Source):
         """Return a list of goodreads ids (editions of the one book), best first.
         Gathers autocomplete candidates across several query variants and picks
         the globally best-matching book, so a weak/wrong early hit cannot lock in
-        the result. ISBN, when present, pins the exact book. If nothing matches,
-        retries once with the title and author fields SWAPPED (some libraries
-        store them the wrong way round)."""
+        the result. ISBN, when present, pins the exact book -- but only once its
+        OWN title/author actually agree with what we are looking for; a
+        misattributed or mistyped ISBN must not silently override a real
+        title+author match. If nothing matches, retries once with the title
+        and author fields SWAPPED (some libraries store them the wrong way
+        round)."""
         isbn = check_isbn(identifiers.get('isbn', None))
 
         pool = []          # list of (bookId, candidate) in preference order
@@ -469,17 +569,29 @@ class GoodreadsFast(Source):
                 seen.add(bid)
                 pool.append((bid, cand))
 
-        target_cand = None
+        isbn_cand = None
 
-        # 1. ISBN query pins the exact book (authoritative for WHICH book).
+        # 1. ISBN query finds a candidate. It only pins the edition once its
+        #    own title/author agree with the query -- the same acceptance gate
+        #    used everywhere else. Goodreads ISBN data (or the source file's
+        #    own ISBN) is sometimes simply wrong for a different book.
         if isbn:
             if abort.is_set():
                 return []
             res = self._autocomplete(log, isbn, timeout)
             if res:
-                target_cand = res[0]
                 for c in res:
                     add(c)
+                core_sets = self._title_core_sets(title)
+                qa_tokens = self._author_token_set(authors)
+                tsim, exact, amatch = self._match_of(res[0], core_sets, qa_tokens)
+                if exact or tsim >= 0.85 or (amatch >= 0.5 and tsim >= 0.7):
+                    isbn_cand = res[0]
+                else:
+                    log.info('ISBN %s resolved to %r but the title/author do '
+                              'not match (tsim=%.2f amatch=%.2f) -- ignoring '
+                              'the ISBN pin and searching by title instead'
+                              % (isbn, res[0].get('bookTitleBare'), tsim, amatch))
 
         # 2. Normal search; if it finds nothing, retry with title <-> author
         #    swapped. The strict title gate keeps the swapped retry from pulling
@@ -499,13 +611,16 @@ class GoodreadsFast(Source):
         for _, c in ranked:
             add(c)
 
-        # 3. Decide the target book (ISBN edition if any, else best title match).
-        if target_cand is None:
-            if not ranked:
-                return []
+        # 3. Decide the target book: a title-confirmed ISBN hit wins outright;
+        #    otherwise the best title match. An ISBN hit whose title didn't
+        #    agree is NOT used as a last-resort guess -- an honest "no match"
+        #    is better than a confidently wrong one.
+        if isbn_cand is not None:
+            target_cand = isbn_cand
+        elif ranked:
             target_cand = ranked[0][1]
         else:
-            add(target_cand)
+            return []
 
         group = self._edition_group(target_cand, pool)
         log.info('edition group for %r: %s'
