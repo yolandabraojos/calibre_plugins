@@ -49,18 +49,26 @@ def _token_sort_ratio(a, b):
 
 
 def title_similarity(old_title, new_title):
-    """Devuelve 0..1. Toma el mejor de: comparacion directa, orden-insensible
-    y comparacion solo del titulo principal (antes de ':')."""
+    """Devuelve 0..1. Combina la comparacion directa y la orden-insensible del
+    titulo COMPLETO. El atajo por 'cabecera' (lo anterior a ':') solo se admite
+    cuando ambos titulos son de longitud comparable: un titulo corto que solo
+    casa con la cabecera de otro mucho mas largo (un subtitulo o una edicion
+    extensa, p.ej. 'Noah' vs 'NOAH: Em Seu Olhar (Edicao Removida)') NO es una
+    coincidencia fiable y debe ir a revision, no auto-aplicarse."""
     o, n = _norm(old_title), _norm(new_title)
     if not o or not n:
         return 0.0
-    cands = [_ratio(o, n), _token_sort_ratio(o, n)]
-    # Solo el titulo principal, descartando subtitulo tras ':'
+    best = max(_ratio(o, n), _token_sort_ratio(o, n))
+    # Atajo por cabecera, con guarda de longitud.
     oh = _norm(unicode_type(old_title).split(':')[0])
     nh = _norm(unicode_type(new_title).split(':')[0])
     if oh and nh:
-        cands.append(_ratio(oh, nh))
-    return max(cands)
+        no, nn = len(o.split()), len(n.split())
+        longer, shorter = max(no, nn), min(no, nn)
+        comparable = (longer <= shorter + 2) or (shorter / float(longer) >= 0.6)
+        if comparable:
+            best = max(best, _ratio(oh, nh))
+    return best
 
 
 def author_similarity(old_authors, new_authors):
@@ -80,11 +88,34 @@ def author_similarity(old_authors, new_authors):
     return best
 
 
+def languages_conflict(oldmi, newmi):
+    """True solo si AMBOS lados declaran idioma y no comparten ninguno.
+    Si el original (o el descargado) no trae idioma, no hay conflicto: el dato
+    falta con frecuencia y no debe penalizar. Pilla ediciones en otro idioma
+    (p.ej. una edicion portuguesa para un original ingles) aunque el titulo y
+    el autor coincidan."""
+    try:
+        ol = [x.strip().lower() for x in (oldmi.languages or []) if x and x.strip()]
+        nl = [x.strip().lower() for x in (newmi.languages or []) if x and x.strip()]
+    except Exception:
+        return False
+    if not ol or not nl:
+        return False
+    # 'und' (indeterminado) no es una afirmacion de idioma: se ignora.
+    os_ = {x for x in ol if x != 'und'}
+    ns_ = {x for x in nl if x != 'und'}
+    if not os_ or not ns_:
+        return False
+    return not (os_ & ns_)
+
+
 def classify(oldmi, newmi, title_thr, author_thr, require_author):
     """(seguro, title_sim, author_sim).
 
     Calibre guarda titulo/autor como null en el OPF descargado cuando son
     identicos al original (optimizacion): eso se trata como coincidencia 1.0.
+    Un conflicto de idioma (ver languages_conflict) fuerza revision aunque
+    titulo y autor coincidan.
     """
     if newmi.is_null('title'):
         ts = 1.0
@@ -97,5 +128,5 @@ def classify(oldmi, newmi, title_thr, author_thr, require_author):
         asim = author_similarity(oldmi.authors or [], newmi.authors or [])
 
     ok_author = (asim >= author_thr) if require_author else True
-    seguro = (ts >= title_thr) and ok_author
+    seguro = (ts >= title_thr) and ok_author and not languages_conflict(oldmi, newmi)
     return seguro, ts, asim

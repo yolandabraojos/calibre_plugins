@@ -20,7 +20,7 @@ class SmartMetadata(InterfaceActionBase):
                    'o muy similares) y deja para revision manual solo los dudosos.')
     supported_platforms = ['windows', 'osx', 'linux']
     author = 'Yolanda Braojos'
-    version = (1, 0, 0)
+    version = (1, 4, 0)
     minimum_calibre_version = (5, 0, 0)
 
     actual_plugin = 'calibre_plugins.smart_metadata.ui:SmartMetadataAction'
