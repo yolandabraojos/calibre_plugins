@@ -9,7 +9,7 @@ from __future__ import unicode_literals, division, absolute_import, print_functi
 __license__ = 'GPL v3'
 __copyright__ = '2026, Yolanda Braojos'
 
-import socket, re, datetime, json
+import socket, re, datetime, json, time
 from collections import Counter
 from threading import Thread
 
@@ -127,7 +127,15 @@ class Worker(Thread):
         try:
             retry = True
             retryCount = 0
-            while retry and retryCount <= 10:
+            # Goodreads a veces devuelve una pagina sin el JSON del libro (503 /
+            # respuesta parcial). Reintentamos, pero pocas veces: 11 intentos
+            # alargaban mucho los libros irrecuperables. 3 es suficiente.
+            # Pequeno backoff antes de cada reintento (no antes del primero):
+            # si Goodreads da 503 por saturacion, esperar ayuda mas que
+            # golpear la misma URL al instante.
+            while retry and retryCount < 3:
+                if retryCount:
+                    time.sleep(min(2.0, 0.5 * retryCount))  # 0.5 s, luego 1.0 s
                 retryCount += 1
                 self.log('Get details attempt #%d' % retryCount)
                 retry = self.get_details()

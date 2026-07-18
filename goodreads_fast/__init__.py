@@ -31,7 +31,7 @@ class GoodreadsFast(Source):
     description = ('Downloads metadata and covers from Goodreads using the live '
                   'autocomplete search. Finds books by title/author even without ISBN.')
     author = 'Yolanda Braojos (based on Goodreads by Grant Drake)'
-    version = (1, 8, 8)
+    version = (1, 8, 10)
     minimum_calibre_version = (2, 0, 0)
 
     capabilities = frozenset(['identify', 'cover'])
