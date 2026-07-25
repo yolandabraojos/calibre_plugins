@@ -802,5 +802,564 @@ class TestAnalyzeCommentExtraSections(unittest.TestCase):
 
 
 
+class TestQRevisar2CorrectionRound(unittest.TestCase):
+    """Correcciones de la 2a ronda de revision del Excel (QRevisar,
+    2026-07-19): ver notas de Yolanda en propuestas_serie_subtitulo.xlsx."""
+
+    def _series(self, title, **kw):
+        s, i, sub = ft.find_series_in_title(title, **kw)
+        return s, i, sub
+
+    def test_complete_series_stays_in_title(self):
+        # "Cuando es Complete Series / Boxed Set debe mantenerse como titulo"
+        title = ('Whatever He Wants: The Complete Series '
+                  '(An Alpha Billionaire Romance)')
+        self.assertIsNone(ft.find_subtitle_in_title(
+            ft.make_clean_title(title)))
+        self.assertEqual(ft.make_clean_title(title), title)
+
+    def test_boxed_set_stays_in_title(self):
+        title = 'The Essential Elements: Boxed Set'
+        self.assertIsNone(ft.find_subtitle_in_title(title))
+        self.assertEqual(ft.make_clean_title(title), title)
+
+    def test_subtitle_splits_on_last_colon_not_first(self):
+        # Con 2+ ":", el titulo se queda con todo salvo el ultimo tramo.
+        self.assertEqual(
+            ft.find_subtitle_in_title('Istoria Online: Square One: A LitRPG Adventure'),
+            'A LitRPG Adventure')
+
+    def test_subtitle_last_colon_main_title(self):
+        clean = 'Istoria Online: Square One: A LitRPG Adventure'
+        sub = ft.find_subtitle_in_title(clean)
+        main = clean.rpartition(': ')[0].strip()
+        self.assertEqual(main, 'Istoria Online: Square One')
+        self.assertEqual(sub, 'A LitRPG Adventure')
+
+    def test_book_n_in_series_word_number(self):
+        # "Se debe considerar el numero de la serie escrito tambien en palabras"
+        self.assertEqual(
+            self._series('Broken Mirrors: Book One of the Broken Mirrors Duology'),
+            ('Broken Mirrors Duology', 1.0, None))
+        self.assertEqual(
+            self._series('Broken Lords: Book Two of the Broken Mirrors Duology'),
+            ('Broken Mirrors Duology', 2.0, None))
+
+    def test_book_n_in_series_word_number_clean_title(self):
+        s, i, _ = self._series(
+            'Broken Mirrors: Book One of the Broken Mirrors Duology')
+        self.assertEqual(
+            ft.make_clean_title(
+                'Broken Mirrors: Book One of the Broken Mirrors Duology',
+                series=s, index=i),
+            'Broken Mirrors')
+
+    def test_series_colon_volume_colon_title(self):
+        # "Volume 9 significa el libro 9 de la serie"
+        self.assertEqual(
+            self._series('The Atomic Sea: Volume Nine: War of the Abyss'),
+            ('The Atomic Sea', 9.0, None))
+
+    def test_series_colon_volume_colon_title_clean(self):
+        s, i, _ = self._series('The Atomic Sea: Volume Nine: War of the Abyss')
+        self.assertEqual(
+            ft.make_clean_title('The Atomic Sea: Volume Nine: War of the Abyss',
+                                series=s, index=i),
+            'War of the Abyss')
+
+    def test_title_colon_series_bare_word_number(self):
+        self.assertEqual(
+            self._series('Swordfall: Fall Trilogy Two'),
+            ('Fall Trilogy', 2.0, None))
+
+    def test_title_colon_series_bare_word_number_clean(self):
+        s, i, _ = self._series('Swordfall: Fall Trilogy Two')
+        self.assertEqual(
+            ft.make_clean_title('Swordfall: Fall Trilogy Two', series=s, index=i),
+            'Swordfall')
+
+    def test_colon_series_book_n_with_trailing_subtitle(self):
+        # "Titulo: Serie Book N: Subtitulo" -- el N ya no exige fin de cadena.
+        self.assertEqual(
+            self._series('Fighting Midnight: Ankarrah Chronicles Book Two: '
+                         'A Paranormal Urban Fantasy'),
+            ('Ankarrah Chronicles', 2.0, 'A Paranormal Urban Fantasy'))
+
+    def test_colon_series_book_n_with_trailing_subtitle_clean(self):
+        s, i, sub = self._series(
+            'Fighting Midnight: Ankarrah Chronicles Book Two: '
+            'A Paranormal Urban Fantasy')
+        self.assertEqual(
+            ft.make_clean_title(
+                'Fighting Midnight: Ankarrah Chronicles Book Two: '
+                'A Paranormal Urban Fantasy',
+                series=s, index=i, subtitle=sub),
+            'Fighting Midnight')
+
+    def test_series_no_trailing_dash(self):
+        # "La serie no debe terminar con - o :"
+        self.assertEqual(
+            self._series('The Faceless Ones (Skulduggery Pleasant - Book 3)'),
+            ('Skulduggery Pleasant', 3.0, None))
+
+    def test_series_no_trailing_dash_clean_title(self):
+        s, i, _ = self._series('The Faceless Ones (Skulduggery Pleasant - Book 3)')
+        self.assertEqual(
+            ft.make_clean_title('The Faceless Ones (Skulduggery Pleasant - Book 3)',
+                                series=s, index=i),
+            'The Faceless Ones')
+
+    def test_normalize_series_name_strips_trailing_dash_and_colon(self):
+        self.assertEqual(ft._normalize_series_name('Skulduggery Pleasant -'),
+                         'Skulduggery Pleasant')
+        self.assertEqual(ft._normalize_series_name('Fall Trilogy:'),
+                         'Fall')  # "Trilogy" is itself a stripped descriptor
+        self.assertEqual(ft._normalize_series_name('Mistborn:'),
+                         'Mistborn')
+
+    def test_doctor_who_ambiguous_case_untouched(self):
+        # "Dificil de diferenciar, quizas solo se pueda manualmente" -- no
+        # existe patron de serie para esto, asi que solo entra por el
+        # subtitulo generico de un colon; se documenta el comportamiento
+        # actual (no se intenta “arreglar”, queda para revision manual).
+        self.assertEqual(ft.find_subtitle_in_title('Doctor Who: Wetworld'),
+                         'Wetworld')
+
+
+class TestSerieGen(unittest.TestCase):
+    """Campo nuevo Serie_Gen: universo/imprint SIN numero, distinto de
+    `series` (que siempre lleva indice). Pedido explicito de Yolanda tras la
+    2a ronda de revision, sobre las filas marcadas "?quizas world? ?otro
+    campo?" (nunca implementadas como `series` porque no tienen numero)."""
+
+    def test_paren_after_subtitle_colon(self):
+        self.assertEqual(
+            ft.find_generic_series_in_title(
+                'The Library: Where Life Checks Out (American Haunts)'),
+            'American Haunts')
+
+    def test_paren_after_subtitle_colon_2(self):
+        self.assertEqual(
+            ft.find_generic_series_in_title(
+                'Tormented Part 2: A Dark High School Bully Romance '
+                '(Elginvale High)'),
+            'Elginvale High')
+
+    def test_paren_with_internal_colon_no_subtitle(self):
+        # El ":" esta DENTRO del parentesis, no hay subtitulo por fuera.
+        self.assertEqual(
+            ft.find_generic_series_in_title('Voodoo (Royal Bastards MC: Ankeny IA)'),
+            'Royal Bastards MC: Ankeny IA')
+
+    def test_strip_from_title(self):
+        sg = ft.find_generic_series_in_title('Voodoo (Royal Bastards MC: Ankeny IA)')
+        self.assertEqual(
+            ft.strip_generic_series_paren('Voodoo (Royal Bastards MC: Ankeny IA)', sg),
+            'Voodoo')
+
+    def test_make_clean_title_strips_serie_gen(self):
+        title = 'The Library: Where Life Checks Out (American Haunts)'
+        sg = ft.find_generic_series_in_title(title)
+        self.assertEqual(
+            ft.make_clean_title(title, serie_gen=sg),
+            'The Library: Where Life Checks Out')
+
+    def test_numbered_paren_not_claimed(self):
+        # Cualquier numero en el parentesis -> es una serie normal (con
+        # indice), no Serie_Gen; lo gestiona find_series_in_title.
+        self.assertIsNone(
+            ft.find_generic_series_in_title(
+                'The Faceless Ones (Skulduggery Pleasant - Book 3)'))
+
+    def test_language_code_not_claimed(self):
+        self.assertIsNone(ft.find_generic_series_in_title('The Hobbit (eng)'))
+
+    def test_edition_note_not_claimed(self):
+        self.assertIsNone(
+            ft.find_generic_series_in_title('El Imperio Final (Spanish Edition)'))
+
+    def test_bare_year_not_claimed(self):
+        self.assertIsNone(ft.find_generic_series_in_title('Evie Undercover (2012)'))
+
+    def test_copy_marker_not_claimed(self):
+        self.assertIsNone(ft.find_generic_series_in_title('A Los Leones(c.1)'))
+
+    def test_genre_blurb_not_claimed(self):
+        self.assertIsNone(
+            ft.find_generic_series_in_title(
+                'Whatever He Wants: The Complete Series '
+                '(An Alpha Billionaire Romance)'))
+
+    def test_complete_series_paren_not_claimed(self):
+        self.assertIsNone(
+            ft.find_generic_series_in_title('Something (The Complete Series)'))
+
+    def test_no_trailing_paren_returns_none(self):
+        self.assertIsNone(ft.find_generic_series_in_title('Plain Title'))
+
+    def test_empty_title(self):
+        self.assertIsNone(ft.find_generic_series_in_title(''))
+        self.assertIsNone(ft.find_generic_series_in_title(None))
+
+    def test_strip_generic_series_paren_noop_without_match(self):
+        self.assertEqual(
+            ft.strip_generic_series_paren('Plain Title', None), 'Plain Title')
+        self.assertEqual(
+            ft.strip_generic_series_paren('Plain Title', 'Nope'), 'Plain Title')
+
+
+def _round3_pipeline(title, author=None):
+    """Mini-replica of action.py's detection cascade (serie_gen -> series ->
+    subtitle cascade -> series+index fallback), used to test the pieces
+    together the same way action.py wires them. Despite the name this now
+    matches the CURRENT (round-4) action.py logic, including the "not
+    subtitle" fallback guard and the serie_gen step -- kept as one shared
+    helper rather than forking a near-duplicate for round 4."""
+    title_for_detection = ft.strip_known_author_suffix(title, author=author)
+    sg = ft.find_generic_series_in_title(title_for_detection)
+    if sg:
+        title_for_detection = ft.strip_generic_series_paren(title_for_detection, sg)
+    found_series, found_index, sub_g = ft.find_series_in_title(
+        title_for_detection, author=author)
+    clean = ft.make_clean_title(title, series=found_series, index=found_index,
+                                 author=author, subtitle=sub_g, serie_gen=sg)
+    sub_colon = None
+    if not sub_g:
+        sub_colon = ft.find_subtitle_in_title(clean)
+        if sub_colon:
+            main = clean.rpartition(': ')[0].strip()
+            if main and main != clean:
+                clean = main
+        else:
+            sub_colon = ft.find_dash_genre_subtitle_in_title(clean)
+            if sub_colon:
+                main = clean.rpartition(' - ')[0].strip()
+                if main and main != clean:
+                    clean = main
+            else:
+                sub_colon = ft.find_paren_genre_subtitle_in_title(clean)
+                if sub_colon:
+                    import re as _re
+                    main = _re.sub(r'\s*\(' + _re.escape(sub_colon) + r'\)\s*$',
+                                    '', clean, flags=_re.IGNORECASE).strip()
+                    if main and main != clean:
+                        clean = main
+    subtitle = sub_g or sub_colon
+    # "not subtitle" guard (v1.7.8 fix): the blurb-shape fallback must only
+    # look at `clean` when NO subtitle was already carved out of it above --
+    # otherwise a perfectly good title that just happens to start with "A"
+    # and contain a blurb word ("A Novel Way to Die") gets wrongly replaced
+    # by the fallback after its real subtitle was already split off cleanly.
+    if found_series and clean and not subtitle and ft.whole_title_is_genre_blurb(clean):
+        subtitle = clean
+        idx_txt = ('%g' % found_index) if found_index is not None else ''
+        clean = (found_series + (' ' + idx_txt if idx_txt else '')).strip()
+    elif found_series and not clean:
+        idx_txt = ('%g' % found_index) if found_index is not None else ''
+        clean = (found_series + (' ' + idx_txt if idx_txt else '')).strip()
+    return clean, found_series, found_index, subtitle, sg
+
+
+class TestRound3SubtitleDecoupledFromSeries(unittest.TestCase):
+    """Ronda 3: el subtitulo ya NO depende de "no se detecto serie" -- se
+    detecta siempre que find_series_in_title no haya devuelto ya uno (sub_g).
+    Casos reales de la 3a ronda de revision de Yolanda (filas 46-178 del
+    Excel, el subconjunto fiable -- ver memoria del proyecto)."""
+
+    def test_series_and_colon_subtitle_together(self):
+        # Antes: al detectarse serie, el subtitulo NUNCA se buscaba.
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Tormented: A Dark High School Bully Romance '
+            '(Elginvale High Book 1)', author='Esme Devlin')
+        self.assertEqual(clean, 'Tormented')
+        self.assertEqual(series, 'Elginvale High')
+        self.assertEqual(index, 1.0)
+        self.assertEqual(subtitle, 'A Dark High School Bully Romance')
+
+    def test_series_and_colon_subtitle_together_2(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'The Correction of Folly: A Sense and Sensibility Variation '
+            '(What Might Have Been Book 1)', author='Christine Combe')
+        self.assertEqual(clean, 'The Correction of Folly')
+        self.assertEqual(series, 'What Might Have Been')
+        self.assertEqual(subtitle, 'A Sense and Sensibility Variation')
+
+
+class TestRound3DashAndParenSubtitleDetectors(unittest.TestCase):
+
+    def test_dash_genre_subtitle(self):
+        self.assertEqual(
+            ft.find_dash_genre_subtitle_in_title(
+                'Wanted By The Billionaire Cowboy - A Second Chance Romance'),
+            'A Second Chance Romance')
+
+    def test_dash_genre_subtitle_end_to_end(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Wanted By The Billionaire Cowboy - A Second Chance Romance '
+            '(Billionaire Cowboys Book 6)', author='Holly Rayner')
+        self.assertEqual(clean, 'Wanted By The Billionaire Cowboy')
+        self.assertEqual(series, 'Billionaire Cowboys')
+        self.assertEqual(subtitle, 'A Second Chance Romance')
+
+    def test_paren_genre_subtitle(self):
+        self.assertEqual(
+            ft.find_paren_genre_subtitle_in_title(
+                "Where there's a Will... (A Novel)"),
+            'A Novel')
+
+    def test_dash_no_genre_shape_returns_none(self):
+        # Sin forma de blurb de genero (no empieza por "a"/"an" + palabra de
+        # genero) -> no se reclama como subtitulo por este detector.
+        self.assertIsNone(
+            ft.find_dash_genre_subtitle_in_title('Some Title - Just A Place'))
+
+    def test_paren_no_genre_shape_returns_none(self):
+        self.assertIsNone(
+            ft.find_paren_genre_subtitle_in_title('Some Title (Some Place)'))
+
+
+class TestRound3NumInSeriesQuotedPattern(unittest.TestCase):
+    """Patron NIS: "Titulo, No. N in the ['the ]Series 'Nombre'[ series]"."""
+
+    def test_basic(self):
+        series, index, sub = ft.find_series_in_title(
+            "Girl on a Train, No. 1 in the 'Tempted by her Student' series "
+            "(lesbian erotica)")
+        self.assertEqual(series, 'Tempted by her Student')
+        self.assertEqual(index, 1.0)
+
+    def test_series_name_with_apostrophe(self):
+        # El nombre de la serie contiene un apostrofo recto ("Amy's") que no
+        # debe confundirse con la comilla de cierre.
+        series, index, sub = ft.find_series_in_title(
+            "Big City Massage (Lesbian Seduction): No. 1 in the Series "
+            "'Amy's Adventures in New York'")
+        self.assertEqual(series, "Amy's Adventures in New York")
+        self.assertEqual(index, 1.0)
+
+    def test_trailing_paren_left_for_downstream(self):
+        # El parentesis final tras "series" NO se consume aqui -- queda para
+        # que serie_gen/subtitulo lo procesen despues.
+        clean = ft.make_clean_title(
+            "Girl on a Train, No. 1 in the 'Tempted by her Student' series "
+            "(lesbian erotica)",
+            series='Tempted by her Student', index=1.0)
+        self.assertEqual(clean, 'Girl on a Train (lesbian erotica)')
+
+    def test_apostrophe_series_clean_title(self):
+        clean = ft.make_clean_title(
+            "Big City Massage (Lesbian Seduction): No. 1 in the Series "
+            "'Amy's Adventures in New York'",
+            series="Amy's Adventures in New York", index=1.0)
+        self.assertEqual(clean, 'Big City Massage (Lesbian Seduction)')
+
+
+class TestRound3TrailingDanglingSeparator(unittest.TestCase):
+
+    def test_dangling_colon_after_paren_strip(self):
+        self.assertEqual(
+            ft.make_clean_title('Justice Unserved: (Nathan Doe Series Book 1)',
+                                 series='Nathan Doe Series Book', index=1.0),
+            'Justice Unserved')
+
+    def test_no_dangling_separator_left_alone(self):
+        # Un titulo normal, sin nada que limpiar, no debe verse afectado.
+        self.assertEqual(
+            ft.make_clean_title('A Perfectly Normal Title'),
+            'A Perfectly Normal Title')
+
+
+class TestRound3WordNumberBookPrefixCleanTitle(unittest.TestCase):
+    """make_clean_title ahora usa el mismo _NUM (con soporte de numeros en
+    palabra) que el patron Q de deteccion -- antes solo aceptaba digitos,
+    dejando "Book Three:" pegado al titulo aunque la serie SI se detectara
+    bien."""
+
+    def test_word_number_book_prefix_stripped(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'NO ROAD HOME Book Three: Risen', author='John Prescott')
+        self.assertEqual(clean, 'Risen')
+        self.assertEqual(series, 'NO ROAD HOME')
+        self.assertEqual(index, 3.0)
+        self.assertIsNone(subtitle)
+
+    def test_word_number_book_prefix_stripped_2(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'NO ROAD HOME Book Two: Hunter, Hunted', author='John Prescott')
+        self.assertEqual(clean, 'Hunter, Hunted')
+        self.assertEqual(series, 'NO ROAD HOME')
+        self.assertEqual(index, 2.0)
+        self.assertIsNone(subtitle)
+
+
+class TestRound3SeriesPlusIndexFallback(unittest.TestCase):
+    """Cuando lo que queda tras quitar la serie es solo un blurb generico
+    repetido en todo el volumen (no un titulo real de este libro concreto),
+    el titulo pasa a ser "Serie N" y el blurb se guarda como subtitulo."""
+
+    def test_whole_remainder_is_genre_blurb(self):
+        self.assertTrue(
+            ft.whole_title_is_genre_blurb('An Erotic Short Story Bundle'))
+
+    def test_fallback_title_becomes_series_plus_index(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Futanarium 3: An Erotic Short Story Bundle', author='Maria N. Lang')
+        self.assertEqual(clean, 'Futanarium 3')
+        self.assertEqual(series, 'Futanarium')
+        self.assertEqual(index, 3.0)
+        self.assertEqual(subtitle, 'An Erotic Short Story Bundle')
+
+    def test_fallback_title_becomes_series_plus_index_2(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Futanarium 1: An Erotic Short Story Bundle', author='Maria N. Lang')
+        self.assertEqual(clean, 'Futanarium 1')
+        self.assertEqual(subtitle, 'An Erotic Short Story Bundle')
+
+    def test_normal_remainder_not_treated_as_blurb(self):
+        # Un titulo real (no un blurb generico) tras quitar la serie no debe
+        # activar el fallback -- se queda como titulo normal.
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'NO ROAD HOME Book Three: Risen', author='John Prescott')
+        self.assertEqual(clean, 'Risen')
+        self.assertNotEqual(clean, 'NO ROAD HOME 3')
+
+
+class TestRound4CorrectionBatch(unittest.TestCase):
+    """Ronda 4 (v1.7.8): 17 filas corregidas por Yolanda directamente en el
+    Excel de propuestas (columnas titulo_correcto/serie_correcta/etc.), tras
+    revisar el fichero de la ronda 3."""
+
+    def test_dash_blurb_series_book(self):
+        # Patron NB: "Titulo: Blurb - Serie - Book N" -- el blurb de genero
+        # no debe fusionarse con la serie real.
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'When Noonday Ends: A Southern Romantic-Suspense Novel - '
+            'Nantahala - Book Two', author='Carmen DeSousa')
+        self.assertEqual(clean, 'When Noonday Ends')
+        self.assertEqual(series, 'Nantahala')
+        self.assertEqual(index, 2.0)
+        self.assertEqual(subtitle, 'A Southern Romantic-Suspense Novel')
+
+    def test_colon_series_dash_book_stripped(self):
+        # make_clean_title ahora tolera "-" (no solo ",") entre la serie y
+        # "Book N" al limpiar el titulo (patron N).
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'A New Paige: Stained Souls MC - Book 2', author='Zara Teleg')
+        self.assertEqual(clean, 'A New Paige')
+        self.assertEqual(series, 'Stained Souls MC')
+        self.assertEqual(index, 2.0)
+        self.assertIsNone(subtitle)
+
+    def test_fallback_does_not_override_real_subtitle_split(self):
+        # Fix critico: el fallback de "titulo=serie+indice" ya NO se dispara
+        # si el cascade de subtitulo YA separo un subtitulo real -- antes
+        # "A Novel Way to Die" (titulo real, ya separado de su subtitulo)
+        # volvia a evaluarse y, por casualidad, tambien tiene forma de blurb
+        # ("A" + "Novel"), asi que se sustituia por error.
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'A Novel Way to Die: a reverse harem murder mystery '
+            '(Nevermore Bookshop Mysteries Book 6)', author='Steffanie Holmes')
+        self.assertEqual(clean, 'A Novel Way to Die')
+        self.assertEqual(series, 'Nevermore Bookshop Mysteries')
+        self.assertEqual(index, 6.0)
+        self.assertEqual(subtitle, 'a reverse harem murder mystery')
+
+    def test_hash_dash_no_spaces(self):
+        # Patron P: el guion entre "#N" y el titulo puede no llevar espacios.
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Blaze of Glory #1-Death From on High: An action adventure '
+            'adult western', author='A. M. Van Dorn')
+        self.assertEqual(clean, 'Death From on High')
+        self.assertEqual(series, 'Blaze of Glory')
+        self.assertEqual(index, 1.0)
+        self.assertEqual(subtitle, 'An action adventure adult western')
+
+    def test_colon_series_hash_no_keyword(self):
+        # Patron AB nuevo: "Titulo: Serie #N" sin palabra clave Book/Volume.
+        clean, series, index, subtitle, sg = _round3_pipeline(
+            'The Worst Reunion Ever: Kate & Kylie Mystery #3 '
+            '(Kate & Kylie Mysteries)', author='Charlotte Moore')
+        self.assertEqual(clean, 'The Worst Reunion Ever')
+        self.assertEqual(series, 'Kate & Kylie Mystery')
+        self.assertEqual(index, 3.0)
+        self.assertEqual(sg, 'Kate & Kylie Mysteries')
+
+    def test_mid_paren_series_with_colon_subtitle(self):
+        # Patron K2 nuevo: parentesis serie+indice en medio del titulo,
+        # seguido de ": Subtitulo" (no al final de cadena como el patron K).
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Alex (Heroes MC Fort Dix 1): MC Romance Suspense',
+            author='AUTUMN SUMMERS')
+        self.assertEqual(clean, 'Alex')
+        self.assertEqual(series, 'Heroes MC Fort Dix')
+        self.assertEqual(index, 1.0)
+        self.assertEqual(subtitle, 'MC Romance Suspense')
+
+    def test_mid_paren_series_with_colon_subtitle_2(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Digger (Heroes MC Fort Dix 3): MC Romance Enemies To Lovers',
+            author='AUTUMN SUMMERS')
+        self.assertEqual(clean, 'Digger')
+        self.assertEqual(series, 'Heroes MC Fort Dix')
+        self.assertEqual(index, 3.0)
+        self.assertEqual(subtitle, 'MC Romance Enemies To Lovers')
+
+    def test_series_vol_title_left_untouched(self):
+        # Patron W: cuando el titulo ENTERO es "Serie, Volume N", el titulo
+        # ya NO se recorta a solo la serie -- se queda tal cual.
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Grantville Gazette, Volume 91', author='Bjorn Hasseler')
+        self.assertEqual(clean, 'Grantville Gazette, Volume 91')
+        self.assertEqual(series, 'Grantville Gazette')
+        self.assertEqual(index, 91.0)
+
+    def test_series_vol_title_left_untouched_no_comma(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Grantville Gazette Volume 93', author='Bjorn Hasseler')
+        self.assertEqual(clean, 'Grantville Gazette Volume 93')
+        self.assertEqual(series, 'Grantville Gazette')
+        self.assertEqual(index, 93.0)
+
+    def test_colon_series_colon_book_no_subtitle(self):
+        # "Titulo: Serie: Book N" -- el "Book N" final es el indice de la
+        # serie, NO un subtitulo (nota explicita de Yolanda en el Excel).
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'Alice Non-Biological: The Girls on the Hill: Book 2',
+            author='Marilyn Foxworthy')
+        self.assertEqual(clean, 'Alice Non-Biological')
+        self.assertEqual(series, 'Girls on the Hill')
+        self.assertEqual(index, 2.0)
+        self.assertIsNone(subtitle)
+
+    def test_colon_series_colon_book_no_subtitle_2(self):
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'The Only Constant: Samair in Argos: Book 7',
+            author='Michael Kotcher')
+        self.assertEqual(clean, 'The Only Constant')
+        self.assertEqual(series, 'Samair in Argos')
+        self.assertEqual(index, 7.0)
+        self.assertIsNone(subtitle)
+
+    def test_genre_blurb_series_accepted_with_explicit_book_keyword(self):
+        # Patron K: "(A Tom Wagner Adventure Book 4)" tiene forma de blurb
+        # de genero (empieza por "A" + palabra "Adventure"), pero el "Book 4"
+        # explicito es prueba suficiente de que es una serie real.
+        clean, series, index, subtitle, _sg = _round3_pipeline(
+            'The Golden Path (A Tom Wagner Adventure Book 4)',
+            author='M. C. Roberts')
+        self.assertEqual(clean, 'The Golden Path')
+        self.assertEqual(series, 'A Tom Wagner Adventure')
+        self.assertEqual(index, 4.0)
+        self.assertIsNone(subtitle)
+
+    def test_genre_blurb_without_book_keyword_still_rejected(self):
+        # Sin "Book N" explicito, la forma de blurb SI debe seguir
+        # rechazandose como nombre de serie (no se ha debilitado la regla
+        # general, solo se ha anadido una excepcion puntual).
+        self.assertFalse(ft._is_valid_series('A Tom Wagner Adventure'))
+        self.assertTrue(
+            ft._is_valid_series('A Tom Wagner Adventure', allow_genre_blurb=True))
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -8,7 +8,23 @@
 #
 # Pipeline con solape: la bomba de DESCARGA baja las rondas una tras otra en
 # segundo plano sin esperar a la revision; la bomba de REVISION abre CompareMany
-# grupo a grupo. Todo lo aceptado se aplica en una sola pasada al final.
+# grupo a grupo.
+#
+# Aplicacion PROGRESIVA: los libros se escriben en la biblioteca sin esperar a
+# terminarlo todo. Los seguros aterrizan en cuanto hay un momento sin revision
+# abierta; los dudosos se cosechan al cerrar la ventana de revision.
+# Nunca se aplica mientras hay un CompareMany modal abierto ni mientras hay otra
+# aplicacion en curso: esas dos operaciones se serializan para no solapar GUIs.
+#
+# Cierre de la ventana de revision (segun como cierra Calibre):
+#   - "Aceptar todos" / terminar la lista / "Rechazar todos los restantes"
+#     -> cierran con codigo Accepted y accepted_map cubre TODOS los del grupo
+#     (los rechazados como (False, None)). Se aplica/descarta lo indicado.
+#   - Cerrar la ventana (X / Cancelar) -> cierra con codigo Rejected y
+#     accepted_map solo trae lo que se reviso. Lo revisado se aplica; lo que
+#     quedo SIN revisar NO se pierde: se reencola y, tras aplicar lo confirmado,
+#     la revision se REABRE con esos pendientes para poder continuar. Para
+#     descartar el resto sin revisarlo, "Rechazar todos los restantes".
 #
 # Fallback: los libros que no encuentran nada con su titulo de biblioteca se
 # reintentan (solo entonces) usando el titulo de un campo alternativo
@@ -122,6 +138,12 @@ class SmartMetadataAction(InterfaceAction):
         if self.gui.current_view() is not self.gui.library_view:
             return error_dialog(self.gui, 'Smart Metadata',
                 'Esto solo funciona sobre la biblioteca de calibre.', show=True)
+        # Guarda de reentrada: no permitir arrancar un segundo pipeline encima
+        # de otro vivo (compartirian el estado de instancia y se mezclarian).
+        if getattr(self, '_pipeline_active', False):
+            return error_dialog(self.gui, 'Smart Metadata',
+                'Ya hay una descarga inteligente en marcha. Espera a que '
+                'termine antes de lanzar otra.', show=True)
         ids = list(self.gui.library_view.get_selected_ids())
         if not ids:
             return error_dialog(self.gui, 'Smart Metadata',
@@ -152,6 +174,7 @@ class SmartMetadataAction(InterfaceAction):
         self._identify, self._covers = d.identify, d.covers
 
         # Estado del pipeline.
+        self._pipeline_active = True
         self._chunks = chunks
         self._nchunks = len(chunks)
         self._total_books = len(ids)
@@ -159,14 +182,17 @@ class SmartMetadataAction(InterfaceAction):
         self._dl_done = False
         self._pending_ids = []       # dudosos aun no mostrados (lista plana)
         self._review_dialog = None   # CompareMany abierto ahora mismo, o None
+        self._review_paused = False  # cierre a medias: rompe el pump para aplicar antes de reabrir
         self._can_inject = False     # el dialogo abierto admite anadir items en caliente
         self._dialog_ids = set()     # ids que han entrado en el dialogo abierto
         self._book_paths = {}        # book_id -> (opf, cov)
         self._active_tdirs = []      # se limpian todos al final
-        self._final_map = {}         # book_id -> (opf, cov) a aplicar al final
+        self._to_apply = {}          # book_id -> (opf, cov) pendientes de ESCRIBIR ya
+        self._apply_in_flight = False  # hay un apply_metadata_changes en curso
         self._finalized = False
         self._failed_ids = set()     # fallos de METADATOS (no de portada); se descuentan al rescatar
-        self._agg = {'auto': 0, 'review': 0, 'rejected': 0, 'applied': 0}
+        self._agg = {'auto': 0, 'review': 0, 'rejected': 0, 'applied': 0,
+                     'unreviewed': 0}
 
         # Umbrales.
         self._title_thr = int(prefs['title_threshold']) / 100.0
@@ -248,6 +274,10 @@ class SmartMetadataAction(InterfaceAction):
                 self._dl_done = True   # el usuario paro el job: no lanzar mas
             else:
                 self._dl_start_next()
+        # Fin de ronda: es un punto natural para reabrir la revision si estaba
+        # en pausa por un cierre a medias. Ahora que hay resultados nuevos (o se
+        # acabo la descarga), dejamos que el pump vuelva a mostrar lo pendiente.
+        self._review_paused = False
         self._kick()
 
     def _classify_round(self, job):
@@ -292,7 +322,9 @@ class SmartMetadataAction(InterfaceAction):
                 review_ids.append(book_id)
                 continue
             if seguro:
-                self._final_map[book_id] = (opf, cov)
+                # Seguro: a la cola de aplicacion inmediata (se escribira en el
+                # proximo momento sin revision abierta).
+                self._to_apply[book_id] = (opf, cov)
                 self._agg['auto'] += 1
             else:
                 review_ids.append(book_id)
@@ -371,12 +403,26 @@ class SmartMetadataAction(InterfaceAction):
                 except Exception:
                     self._pending_ids = new + self._pending_ids
             return
+        # No solapar GUIs: si hay una aplicacion en curso, esperamos a que
+        # termine. Su callback (_on_applied) vuelve a llamar al pump.
+        if self._apply_in_flight:
+            return
         # Sin dialogo abierto: abrir con todo lo pendiente; repetir si llega mas
-        # mientras se cerraba (asi ninguno se pierde).
-        while self._pending_ids:
+        # mientras se cerraba (asi ninguno se pierde). Si esta en pausa (cierre
+        # a medias), NO reabrimos: esperamos al fin de la proxima ronda.
+        while self._pending_ids and not self._review_paused:
             group = self._pending_ids
             self._pending_ids = []
             self._open_review(group)
+        # Momento seguro (sin revision abierta): escribe lo acumulado.
+        self._flush_apply()
+        # Si un cierre a medias reencolo dudosos y no habia nada que aplicar
+        # (o ya se aplico de forma sincrona), levantamos la pausa y reabrimos
+        # la revision con lo reencolado.
+        if self._review_paused and not self._apply_in_flight:
+            self._review_paused = False
+            if self._pending_ids:
+                self._kick()
         self._maybe_finalize()
 
     def _get_metadata(self, book_id):
@@ -410,11 +456,16 @@ class SmartMetadataAction(InterfaceAction):
             accept_all_tooltip='Usar los metadatos descargados para todos los restantes',
             reject_all_tooltip='Descartar los metadatos descargados de todos los restantes',
             revert_tooltip='Descartar el valor descargado de: %s',
-            intro_msg=('Estos son los DUDOSOS (los seguros ya se aplicaran al '
-                       'terminar). A la izquierda lo descargado, a la derecha lo '
+            intro_msg=('Estos son los DUDOSOS (los seguros se van aplicando '
+                       'aparte). A la izquierda lo descargado, a la derecha lo '
                        'original. Si un valor descargado esta vacio, se conserva '
                        'el original. Si llegan mas dudosos mientras revisas, se '
-                       'van anadiendo a esta misma ventana.'),
+                       'van anadiendo a esta misma ventana. Lo que revises se '
+                       'aplica al cerrar. Si cierras la ventana (Cancelar) sin '
+                       'terminar, lo que quede sin revisar NO se pierde: se '
+                       'aplica lo confirmado y la revision se reabre con el '
+                       'resto para continuar. Para descartarlos, usa "Rechazar '
+                       'todos los restantes".'),
             action_button=('&Ver libro', 'view.png',
                            self.gui.iactions['View'].view_historical),
             db=db)
@@ -426,38 +477,87 @@ class SmartMetadataAction(InterfaceAction):
         self._can_inject = (hasattr(d, 'ids') and hasattr(d, 'total')
                             and getattr(d, 'total', 0) > 1)
         try:
+            # Accepted: termino la lista, "aceptar todos" o "rechazar todos los
+            # restantes" (en los tres, accepted_map cubre TODO el grupo).
+            # Rejected: cerro la ventana (X / Cancelar) -> solo trae lo revisado.
             accepted = (d.exec() == QDialog.DialogCode.Accepted)
         finally:
             self._review_dialog = None
             self._can_inject = False
-        if accepted:
-            # 'accepted' (calibre 9.x) vs 'accepted_map' (mas reciente).
-            acc = getattr(d, 'accepted_map', None)
-            if acc is None:
-                acc = d.accepted
-            for book_id, (changed, mi) in acc.items():
-                if mi is None:  # descartado por el usuario
-                    self._agg['rejected'] += 1
-                    continue
-                opf, cov = self._book_paths.get(book_id, (None, None))
-                if changed:
-                    cfile = mi.cover
-                    mi.cover, mi.cover_data = None, (None, None)
-                    if opf is not None:
-                        with open(opf, 'wb') as f:
-                            f.write(metadata_to_opf(mi))
-                    if cfile and cov:
-                        shutil.copyfile(cfile, cov)
-                        try:
-                            os.remove(cfile)
-                        except Exception:
-                            pass
-                self._final_map[book_id] = (opf, cov)
-        else:
-            # Cancelado: se descartan todos los que estaban en el dialogo
-            # (originales + los anadidos en caliente).
-            self._agg['rejected'] += len(self._dialog_ids)
+        # Cosecha lo YA revisado, se cierre como se cierre. 'accepted_map'
+        # (calibre reciente) vs 'accepted' (calibre 9.x).
+        acc = getattr(d, 'accepted_map', None)
+        if acc is None:
+            acc = getattr(d, 'accepted', None)
+        acc = acc or {}
+        reviewed = set()
+        for book_id, val in acc.items():
+            reviewed.add(book_id)
+            try:
+                changed, mi = val
+            except Exception:
+                continue
+            if mi is None:  # descartado por el usuario
+                self._agg['rejected'] += 1
+                continue
+            opf, cov = self._book_paths.get(book_id, (None, None))
+            if changed:
+                cfile = mi.cover
+                mi.cover, mi.cover_data = None, (None, None)
+                if opf is not None:
+                    with open(opf, 'wb') as f:
+                        f.write(metadata_to_opf(mi))
+                if cfile and cov:
+                    shutil.copyfile(cfile, cov)
+                    try:
+                        os.remove(cfile)
+                    except Exception:
+                        pass
+            self._to_apply[book_id] = (opf, cov)
+        # Los que estaban en el dialogo pero NO se revisaron (ventana cerrada
+        # a medias con Cancelar).
+        not_reviewed = self._dialog_ids - reviewed
         self._dialog_ids = set()
+        if not_reviewed:
+            if not accepted:
+                # Cierre a medias (Cancelar): lo no revisado NO se pierde. Se
+                # reencola (al frente) y se pausa el pump para aplicar antes lo
+                # confirmado; despues la revision se REABRE con lo reencolado
+                # (la reabre _on_applied, o el propio pump si no habia nada que
+                # aplicar). Para descartar el resto, "Rechazar todos los
+                # restantes" (cierra como Accepted, no pasa por aqui).
+                self._pending_ids = list(not_reviewed) + self._pending_ids
+                self._review_paused = True
+            else:
+                # Cierre Accepted que no cubre a todos (no deberia pasar:
+                # aceptar/rechazar todos cubren el grupo). Por seguridad, sin
+                # revisar.
+                self._agg['unreviewed'] += len(not_reviewed)
+
+    # --- aplicacion progresiva ---------------------------------------------
+    def _flush_apply(self):
+        """Escribe en la biblioteca lo acumulado hasta ahora. Solo en momentos
+        seguros: sin dialogo de revision abierto y sin otra aplicacion en curso
+        (el pump garantiza ambas cosas antes de llamar aqui)."""
+        if self._apply_in_flight or self._review_dialog is not None:
+            return
+        if not self._to_apply:
+            return
+        batch = self._to_apply
+        self._to_apply = {}
+        self._apply_in_flight = True
+        self._agg['applied'] += len(batch)
+        em = self.gui.iactions['Edit Metadata']
+        em.apply_metadata_changes(
+            batch, merge_comments=msprefs['append_comments'],
+            icon='download-metadata.png', callback=self._on_applied)
+
+    def _on_applied(self, applied_ids):
+        self._apply_in_flight = False
+        # Ya se aplico lo confirmado. Si un cierre a medias dejo dudosos
+        # reencolados, se levanta la pausa para reabrir la revision con ellos.
+        self._review_paused = False
+        self._kick()
 
     # --- cierre ------------------------------------------------------------
     def _maybe_finalize(self):
@@ -467,21 +567,17 @@ class SmartMetadataAction(InterfaceAction):
             return
         if not self._dl_done:
             return
+        if self._apply_in_flight:
+            return
+        if self._to_apply:
+            # Aun queda algo por escribir: aplicarlo; _on_applied volvera aqui.
+            self._flush_apply()
+            return
         self._finalized = True
-        self._finalize()
+        self._finish()
 
-    def _finalize(self):
-        if not self._final_map:
-            self._cleanup_all()
-            return info_dialog(self.gui, 'Smart Metadata completado',
-                               self._summary(), show=True)
-        self._agg['applied'] = len(self._final_map)
-        em = self.gui.iactions['Edit Metadata']
-        em.apply_metadata_changes(
-            self._final_map, merge_comments=msprefs['append_comments'],
-            icon='download-metadata.png', callback=self._after_apply)
-
-    def _after_apply(self, applied_ids):
+    def _finish(self):
+        self._pipeline_active = False
         self._cleanup_all()
         info_dialog(self.gui, 'Smart Metadata completado',
                     self._summary(), show=True)
@@ -498,11 +594,13 @@ class SmartMetadataAction(InterfaceAction):
             'Aplicados automaticamente (seguros): %d\n'
             'Enviados a revision (dudosos): %d\n'
             'Rechazados en revision: %d\n'
+            'Sin revisar (revision cerrada a medias): %d\n'
             'Total aplicado a la biblioteca: %d\n'
             'Rescatados por el campo de fallback: %d\n'
             'Sin resultado (metadatos): %d'
             % (self._agg['auto'], self._agg['review'], self._agg['rejected'],
-               self._agg['applied'], rescued, len(self._failed_ids)))
+               self._agg['unreviewed'], self._agg['applied'], rescued,
+               len(self._failed_ids)))
 
     def _cleanup_all(self):
         for t in self._active_tdirs:
