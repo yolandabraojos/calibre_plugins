@@ -160,18 +160,69 @@ class PairReviewDialog(QDialog):
     # Auto-marking of 100 % identical pairs
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Criterio de "que copia se conserva" -- COMPARTIDO con dedupe_cli.py
+    # ------------------------------------------------------------------
+    # El orden es exactamente el mismo que aplica dedupe_cli.py con
+    # --keep plugin, para que el informe del CLI y lo que marca este dialogo
+    # no puedan discrepar:
+    #
+    #   1. EPUB antes que AZW3.
+    #   2. Edicion editorial antes que conversion casera de Calibre.
+    #   3. Fichero mas GRANDE.
+    #
+    # La logica de procedencia vive en extractor.epub_provenance(), un unico
+    # sitio para las dos herramientas.  Aqui solo se memoiza por ruta, porque
+    # este metodo corre en el hilo de la interfaz y no conviene releer el mismo
+    # ZIP una vez por pareja.
+
+    def _origin_of(self, book):
+        path = book.get('path')
+        if not path:
+            return 'desconocido'
+        cache = getattr(self, '_origin_cache', None)
+        if cache is None:
+            cache = self._origin_cache = {}
+        if path in cache:
+            return cache[path]
+        try:
+            from .extractor import epub_provenance
+            origin, _reasons = epub_provenance(path)
+        except Exception:
+            origin = 'desconocido'
+        cache[path] = origin
+        return origin
+
+    def _keep_key(self, book):
+        """Clave de preferencia: el MENOR se conserva."""
+        try:
+            from .extractor import origin_rank
+            orank = origin_rank(self._origin_of(book))
+        except Exception:
+            orank = 1
+        return (
+            0 if (book.get('format') or '').upper() == 'EPUB' else 1,
+            orank,
+            -(book.get('size') or 0),
+            book.get('id') or 0,
+        )
+
     def _auto_mark_100pct_pairs(self):
         """
         For every pair with exactly 100 % similarity that has not been
-        processed yet, automatically mark one of the two books for deletion:
+        processed yet, automatically mark one of the two books for deletion.
 
-        - EPUB vs AZW3  → mark the AZW3.
-        - Same format   → mark the larger file (by size).
+        La copia que se CONSERVA es la mejor segun _keep_key():
+
+        - EPUB antes que AZW3.
+        - Edicion editorial antes que conversion casera de Calibre.
+        - Fichero mas grande.
 
         Safety guarantee: at least one book per (title, authors) group is
         always left unmarked, even if that means overriding the rule above.
-        The book kept alive is the one with the best "quality" score
-        (EPUB preferred over AZW3, then smallest file size).
+        El libro que sobrevive es el mejor segun el MISMO _keep_key(), no otro
+        criterio: antes la regla principal conservaba el fichero grande y la red
+        de seguridad conservaba el pequeno, asi que ambas se contradecian.
         """
         # ── Step 1: collect candidate marks from new 100 % pairs ──────────
         # Maps book_id → book-info dict for books we want to mark.
@@ -188,15 +239,12 @@ class PairReviewDialog(QDialog):
 
             a = pair['book_a']
             b = pair['book_b']
-            fmt_a = a.get('format', '').upper()
-            fmt_b = b.get('format', '').upper()
 
-            if fmt_a != fmt_b:
-                # Mixed formats: always prefer EPUB → mark the AZW3
-                to_mark = a if fmt_a == 'AZW3' else b
-            else:
-                # Same format: mark the smaller file (keep the larger)
-                to_mark = a if a.get('size', 0) <= b.get('size', 0) else b
+            # Se conserva el mejor segun _keep_key() y se marca el otro.  Cubre
+            # de una vez el caso de formatos mixtos (EPUB gana a AZW3), el de
+            # procedencia distinta (editorial gana a conversion de Calibre) y el
+            # de empate (gana el fichero mas grande).
+            keep, to_mark = sorted((a, b), key=self._keep_key)
 
             if to_mark['id'] not in self.ids_deleted:
                 candidate_marks[to_mark['id']] = to_mark
@@ -228,17 +276,13 @@ class PairReviewDialog(QDialog):
                 continue  # At least one book will remain unmarked
 
             # All books in this group would be deleted — un-mark the best one.
-            # "Best": EPUB over AZW3, then smallest size.
+            # "Best" es EXACTAMENTE el mismo _keep_key() de la regla principal.
             all_to_consider = would_be_marked - self.ids_deleted
             if not all_to_consider:
                 continue
 
-            def _quality(bid):
-                bk = all_books.get(bid, {})
-                fmt_score = 0 if bk.get('format', '').upper() == 'EPUB' else 1
-                return (fmt_score, bk.get('size', 0))
-
-            best_bid = min(all_to_consider, key=_quality)
+            best_bid = min(all_to_consider,
+                           key=lambda bid: self._keep_key(all_books.get(bid, {})))
             if best_bid in candidate_marks:
                 del candidate_marks[best_bid]
             elif best_bid in self.ids_to_delete:

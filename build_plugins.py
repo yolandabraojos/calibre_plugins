@@ -33,7 +33,7 @@ import py_compile
 BASE = os.path.dirname(os.path.abspath(__file__))
 DIST = os.path.join(BASE, 'dist')
 
-EXCLUDE_DIRS  = {'__pycache__', '.build', '.git', 'dist'}
+EXCLUDE_DIRS  = {'__pycache__', '.build', '.git', 'dist', 'dedupe_out'}
 EXCLUDE_EXTS  = {'.pyc', '.pyo'}
 EXCLUDE_NAMES = {'.DS_Store', 'Thumbs.db', 'desktop.ini'}
 TEXT_EXTS     = ('.py', '.json', '.txt', '.md', '.csv', '.cfg', '.ini', '.pot')
@@ -85,6 +85,10 @@ def included_files(plugin_dir):
             if f in EXCLUDE_NAMES:
                 continue
             if os.path.splitext(f)[1].lower() in EXCLUDE_EXTS:
+                continue
+            # Informes y planes de dedupe_cli.py: si alguna ejecucion los deja
+            # en la carpeta del plugin, NO deben viajar dentro del ZIP.
+            if f.startswith('duplicados_') or f.endswith('.plan.json'):
                 continue
             if f.endswith('.bak') or '.bak.' in f:
                 continue

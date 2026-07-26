@@ -51,6 +51,20 @@ prefs.defaults['llm_serie_field'] = '#serie_ia'
 prefs.defaults['llm_write_conf']  = True
 prefs.defaults['llm_conf_field']  = '#confianza_ia'
 
+# Campo dedicado a la clasificacion de la IA en la nube (separado del campo
+# principal ml_library_field): el rescate escribe AQUI, nunca en el campo
+# principal. La clasificacion local puede LEER este campo para promover su
+# valor al campo principal si la confianza es muy alta (ver llm_promote_*),
+# pero nunca escribe en el.
+prefs.defaults['llm_library_field']  = '#libreria_ia'
+prefs.defaults['llm_library_prefix'] = 'Biblioteca IA: '
+# Promocion del valor de llm_library_field al campo principal durante la
+# clasificacion local, solo si su confianza (llm_conf_field/100) supera este
+# umbral (mas estricto que llm_min_conf, que solo decide si el rescate
+# resuelve el residuo). Nunca sobreescribe llm_library_field.
+prefs.defaults['llm_promote_enabled']   = True
+prefs.defaults['llm_promote_threshold'] = 0.90
+
 
 class ConfigWidget(QWidget):
     def __init__(self):
@@ -201,6 +215,22 @@ class ConfigWidget(QWidget):
         row_bt.addWidget(self.txt_llm_minconf)
         ll.addLayout(row_bt)
 
+        row_libia = QHBoxLayout()
+        row_libia.addWidget(QLabel('Columna de la libreria detectada por la IA:'))
+        self.txt_llm_library_field = QLineEdit()
+        self.txt_llm_library_field.setPlaceholderText('#libreria_ia')
+        row_libia.addWidget(self.txt_llm_library_field)
+        ll.addLayout(row_libia)
+        lbl_libia_hint = QLabel(
+            '<small>Columna PROPIA de la IA, separada del campo de libreria de la '
+            'clasificacion local (arriba, en "Campos destino"). El rescate escribe '
+            'aqui su resultado; la clasificacion local puede leerlo (ver mas abajo '
+            '"Promocion a la clasificacion principal") pero nunca escribe en esta '
+            'columna. Crea una columna de texto personalizada si usas el nombre por '
+            'defecto.</small>')
+        lbl_libia_hint.setWordWrap(True)
+        ll.addWidget(lbl_libia_hint)
+
         self.chk_llm_temas = QCheckBox('Escribir tambien los temas detectados por la IA')
         ll.addWidget(self.chk_llm_temas)
 
@@ -243,6 +273,28 @@ class ConfigWidget(QWidget):
             'que la IA resuelve.</small>')
         lbl_conf_hint.setWordWrap(True)
         ll.addWidget(lbl_conf_hint)
+
+        self.chk_llm_promote = QCheckBox(
+            'Promocion a la clasificacion principal: usar la libreria IA como '
+            'clasificacion si su confianza supera el umbral')
+        ll.addWidget(self.chk_llm_promote)
+        row_promote = QHBoxLayout()
+        row_promote.addWidget(QLabel('Umbral de promocion (0-1):'))
+        self.txt_llm_promote_threshold = QLineEdit()
+        self.txt_llm_promote_threshold.setPlaceholderText('0.90')
+        self.txt_llm_promote_threshold.setMaximumWidth(70)
+        row_promote.addWidget(self.txt_llm_promote_threshold)
+        ll.addLayout(row_promote)
+        lbl_promote_hint = QLabel(
+            '<small>Al lanzar "Clasificar" (IA local), si un libro ya tiene un valor '
+            'en la columna de libreria IA de arriba con esa confianza minima, se usa '
+            'directamente como clasificacion (nivel adicional, antes del consenso de '
+            'grupo/autor). La columna de la IA NUNCA se sobreescribe en este paso; '
+            'solo se lee. Umbral recomendado alto (0.85-0.95): mas estricto que la '
+            'confianza minima del rescate, que solo decide si la IA resuelve el '
+            'residuo.</small>')
+        lbl_promote_hint.setWordWrap(True)
+        ll.addWidget(lbl_promote_hint)
 
         self.btn_llm_test = QPushButton('Probar conexion')
         self.btn_llm_test.clicked.connect(self._test_llm)
@@ -292,6 +344,7 @@ class ConfigWidget(QWidget):
         self.txt_llm_model.setText(prefs['llm_model'])
         self.txt_llm_batch.setText(str(prefs['llm_batch']))
         self.txt_llm_minconf.setText(str(prefs['llm_min_conf']))
+        self.txt_llm_library_field.setText(prefs['llm_library_field'])
         self.chk_llm_temas.setChecked(prefs['llm_write_temas'])
         self.chk_llm_reason.setChecked(prefs['llm_write_reason'])
         self.txt_llm_reason_field.setText(prefs['llm_reason_field'])
@@ -299,6 +352,8 @@ class ConfigWidget(QWidget):
         self.txt_llm_serie_field.setText(prefs['llm_serie_field'])
         self.chk_llm_conf.setChecked(prefs['llm_write_conf'])
         self.txt_llm_conf_field.setText(prefs['llm_conf_field'])
+        self.chk_llm_promote.setChecked(prefs['llm_promote_enabled'])
+        self.txt_llm_promote_threshold.setText(str(prefs['llm_promote_threshold']))
 
     def save_settings(self):
         prefs['source_fields'] = [k for k, c in self._source_checks.items() if c.isChecked()]
@@ -332,6 +387,7 @@ class ConfigWidget(QWidget):
             prefs['llm_min_conf'] = max(0.0, min(1.0, float(self.txt_llm_minconf.text().strip() or '0.55')))
         except ValueError:
             prefs['llm_min_conf'] = 0.55
+        prefs['llm_library_field'] = self.txt_llm_library_field.text().strip() or '#libreria_ia'
         prefs['llm_write_temas'] = self.chk_llm_temas.isChecked()
         prefs['llm_write_reason'] = self.chk_llm_reason.isChecked()
         prefs['llm_reason_field'] = self.txt_llm_reason_field.text().strip() or '#motivo_ia'
@@ -339,6 +395,12 @@ class ConfigWidget(QWidget):
         prefs['llm_serie_field'] = self.txt_llm_serie_field.text().strip() or '#serie_ia'
         prefs['llm_write_conf']  = self.chk_llm_conf.isChecked()
         prefs['llm_conf_field']  = self.txt_llm_conf_field.text().strip() or '#confianza_ia'
+        prefs['llm_promote_enabled'] = self.chk_llm_promote.isChecked()
+        try:
+            prefs['llm_promote_threshold'] = max(0.0, min(1.0, float(
+                self.txt_llm_promote_threshold.text().strip() or '0.90')))
+        except ValueError:
+            prefs['llm_promote_threshold'] = 0.90
 
 
 def show_config_dialog(gui):

@@ -11,6 +11,12 @@ aqui solo se hace red + calculo. Las escrituras se aplican luego en el callback.
 Recoge los libros que el clasificador local dejo sin resolver ('[REVISAR]' o
 '(sin datos)') — o TODOS si force_all — y los manda en lotes al LLM. Solo
 reescribe los que el LLM resuelve con confianza.
+
+La libreria que devuelve la IA se escribe en un campo PROPIO y separado
+(`llm_library_field`, por defecto `#libreria_ia`) — nunca en el campo
+principal de clasificacion (`ml_library_field`). Ese campo principal solo lo
+escriben el clasificador local (`ml_jobs.py`) y su nivel de promocion, que
+LEE `llm_library_field` pero jamas escribe en el.
 """
 from __future__ import unicode_literals, division, absolute_import, print_function
 
@@ -209,6 +215,14 @@ def run_rescue_batch_task(cand, settings, label, log=None, abort=None, notificat
     overwrite   = s.get('overwrite', True)
     lib_prefix_eff  = lib_prefix if lib_field == 'tags' else ''
     mood_prefix_eff = mood_prefix if mood_field == 'tags' else ''
+    # Campo DEDICADO de la IA (separado del campo principal lib_field, que
+    # aqui solo se usa para leer el residuo -en run.py/select_rescue_candidates-
+    # y para filtrar tags de fuga del contexto). El rescate escribe SOLO aqui;
+    # nunca en lib_field -eso lo hace, como mucho, el nivel de promocion de
+    # ml_jobs.run_classify_chunk_task, que ademas NUNCA escribe en este campo-.
+    llm_lib_field      = s.get('llm_library_field', '#libreria_ia')
+    llm_lib_prefix     = s.get('llm_library_prefix', 'Biblioteca IA: ')
+    llm_lib_prefix_eff = llm_lib_prefix if llm_lib_field == 'tags' else ''
 
     if provider != 'local' and not key:
         result['failed'] = True
@@ -286,15 +300,15 @@ def run_rescue_batch_task(cand, settings, label, log=None, abort=None, notificat
                 bid = m['id']
                 if resolved:
                     new_by_field = {}
-                    new_by_field.setdefault(lib_field, []).append(lib_prefix_eff + lib)
+                    new_by_field.setdefault(llm_lib_field, []).append(llm_lib_prefix_eff + lib)
                     if write_temas and temas:
                         new_by_field.setdefault(mood_field, []).extend(
                             mood_prefix_eff + t for t in temas)
                     for field, newvals in new_by_field.items():
                         prev = (m.get('prev') or {}).get(field)
                         own_prefixes = []
-                        if field == lib_field:
-                            own_prefixes.append(lib_prefix_eff)
+                        if field == llm_lib_field:
+                            own_prefixes.append(llm_lib_prefix_eff)
                         if write_temas and field == mood_field:
                             own_prefixes.append(mood_prefix_eff)
                         merged = _merge_prefixed(newvals, prev, field, own_prefixes, overwrite)

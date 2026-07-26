@@ -1,6 +1,6 @@
 # Book Classifier — Documentación de comportamiento del plugin
 
-**Versión:** 3.4.1
+**Versión:** 3.5.0
 **Plataformas:** Windows · macOS · Linux
 **Calibre mínimo:** 5.0.0
 
@@ -11,7 +11,7 @@
 1. [Arquitectura general](#1-arquitectura-general)
 2. [Los dos ejes de clasificación](#2-los-dos-ejes-de-clasificación)
 3. [Motor IA local (`ml_classifier.py`)](#3-motor-ia-local-ml_classifierpy)
-4. [Los tres niveles de decisión de librería](#4-los-tres-niveles-de-decisión-de-librería)
+4. [Los niveles de decisión de librería](#4-los-niveles-de-decisión-de-librería)
 5. [Reparto en chunks/jobs (`plan_classify_chunks`)](#5-reparto-en-chunksjobs-plan_classify_chunks)
 6. [Escritura de campos y fusión con lo existente](#6-escritura-de-campos-y-fusión-con-lo-existente)
 7. [Rescate con IA en la nube (capa híbrida opcional)](#7-rescate-con-ia-en-la-nube-capa-híbrida-opcional)
@@ -60,6 +60,14 @@ por tanto recibir un valor de librería que el modelo local nunca produciría
 directamente. Si se homogeneiza la taxonomía de un lado, hay que revisar el
 otro (`llm_rescue_engine.LIBRERIAS` vs `model_weights.json["classes"]`).
 
+**Dos campos separados (desde 3.5.0):** la clasificación final vive en
+`ml_library_field` (por defecto `tags`/`Biblioteca: `, la de siempre). El
+resultado CRUDO del rescate con IA vive en un campo PROPIO y separado,
+`llm_library_field` (por defecto `#libreria_ia`) — el rescate NUNCA escribe
+ya en `ml_library_field`. La clasificación local puede LEER ese campo
+dedicado y promover su valor al campo principal si la confianza es muy alta
+(§4, nivel 0), pero nunca escribe en él. Ver §6 y §9.
+
 ---
 
 ## 3. Motor IA local (`ml_classifier.py`)
@@ -83,11 +91,24 @@ otro (`llm_rescue_engine.LIBRERIAS` vs `model_weights.json["classes"]`).
 
 ---
 
-## 4. Los tres niveles de decisión de librería
+## 4. Los niveles de decisión de librería
 
 Ejecutados en este orden, cada uno solo actúa sobre lo que el anterior no
-resolvió:
+resolvió (salvo el nivel 0, que puede ser sobreescrito por el consenso de
+grupo — ver más abajo):
 
+0. **Promoción desde la IA en la nube** *(opcional, `llm_promote_enabled`,
+   por defecto activado)*. Antes de la predicción individual, se lee
+   -nunca se escribe- el campo dedicado del rescate LLM
+   (`llm_library_field`, ver §7) y su confianza (`llm_conf_field`, entero
+   0-100). Si hay valor y su confianza/100 supera `llm_promote_threshold`
+   (por defecto 0.90 — deliberadamente más estricto que `llm_min_conf`,
+   0.55, que solo decide si el rescate resuelve el residuo), se usa ese
+   valor tal cual como clasificación del libro (confianza no incierta).
+   Sigue pudiendo ser sobreescrito por el consenso de grupo (nivel 2) si el
+   resto de la serie tira hacia otra librería con más confianza acumulada —
+   misma filosofía que con una predicción individual bien clasificada (ver
+   §10). El campo dedicado de la IA NUNCA se escribe desde aquí.
 1. **Predicción individual.** Si la confianza del modelo supera el umbral
    configurado (`ml_threshold`, por defecto 0.55), se usa tal cual.
 2. **Consenso de grupo** (dentro de `run_classify_chunk_task`, por cada
@@ -159,6 +180,13 @@ Los prefijos solo se aplican cuando el campo destino ES `tags`
 dedicada como `#libreria`) — así el prefijo `Biblioteca:` no ensucia una
 columna que ya es exclusivamente para eso.
 
+**El campo dedicado de la IA (`llm_library_field`, §7) sigue la misma regla
+de fusión** pero con un único escritor: solo `llm_jobs.run_rescue_batch_task`
+escribe ahí (`llm_library_prefix`, efectivo solo si el campo es `tags`). El
+nivel 0 de `ml_jobs.py` (§4) lo LEE para promocionar su valor al campo
+principal, pero nunca pasa por `_merge_prefixed` sobre ese campo — no lo
+toca en absoluto.
+
 ---
 
 ## 7. Rescate con IA en la nube (capa híbrida opcional)
@@ -208,6 +236,13 @@ clasificación local, mandándolos a un LLM externo.
   chunks de hasta `2 × llm_batch`; cada job hace sus llamadas y aplica sus
   escrituras en cuanto termina, sin esperar a los demás — así los primeros
   resultados aparecen antes en bibliotecas grandes.
+- **Campo de la librería (desde 3.5.0, campo PROPIO):** el resultado de la
+  IA se escribe en `llm_library_field` (por defecto `#libreria_ia`), NUNCA
+  en el campo principal de la clasificación local (`ml_library_field`). Solo
+  se escribe cuando el libro queda resuelto (confianza ≥ `llm_min_conf`).
+  Para que ese resultado llegue al campo principal hace falta el nivel 0 de
+  promoción de `ml_jobs.py` (§4, umbral `llm_promote_threshold` propio y más
+  estricto) — el rescate por sí solo ya no toca el campo principal.
 - **Campos opcionales que puede rellenar** (todos con columna configurable):
   motivo (`#motivo_ia` por defecto), serie detectada (`#serie_ia`), % de
   confianza 0-100 (`#confianza_ia`). Motivo y confianza se guardan siempre
@@ -247,6 +282,8 @@ sus valores por defecto:
 | `llm_batch` / `llm_min_conf` | `10` / `0.55` | Libros por llamada y confianza mínima del rescate |
 | `llm_write_temas` / `llm_write_reason` / `llm_write_serie` / `llm_write_conf` | `True` × 4 | Qué campos adicionales rellena el rescate |
 | `llm_reason_field` / `llm_serie_field` / `llm_conf_field` | `#motivo_ia` / `#serie_ia` / `#confianza_ia` | Columnas destino de esos campos |
+| `llm_library_field` / `llm_library_prefix` | `#libreria_ia` / `'Biblioteca IA: '` | Campo PROPIO donde el rescate escribe su librería (nunca en `ml_library_field`); el prefijo solo se aplica si el campo es `tags` |
+| `llm_promote_enabled` / `llm_promote_threshold` | `True` / `0.90` | Nivel 0 (§4): promueve el valor de `llm_library_field` al campo principal si su confianza (`llm_conf_field`/100) supera este umbral. Solo lee `llm_library_field`, nunca escribe en él |
 
 ---
 
@@ -270,7 +307,14 @@ sus valores por defecto:
   conceptualmente — si se quiere que ambos plugins compartan el mismo dato,
   hay que igualar `ml_universe_field` a `#world` a mano en la configuración.
 - El rescate con IA requiere conexión y clave de API; el resto del plugin
-  (clasificación local, niveles 1-3) funciona sin internet.
+  (clasificación local, niveles 0-3) funciona sin internet — el nivel 0 solo
+  LEE datos que un rescate anterior ya haya dejado en `llm_library_field`,
+  no llama a ningún proveedor por sí mismo.
+- El umbral de promoción (`llm_promote_threshold`, 0.90 por defecto) es
+  deliberadamente más alto que `llm_min_conf` (0.55): este último decide si
+  el rescate resuelve un residuo (queda como "clasificación de la IA"),
+  mientras que promocionar ese valor al campo principal es una decisión más
+  fuerte y debe reservarse a los casos en que la IA está muy segura.
 - Sin límite de tamaño de biblioteca conocido, pero bibliotecas muy grandes
   generan muchos `ThreadedJob` en paralelo (uno por chunk); Calibre los
   encola internamente.

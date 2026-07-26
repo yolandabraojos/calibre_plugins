@@ -13,6 +13,20 @@ def get_text_hash(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 
+def fingerprint_from_hashes(chapter_hashes):
+    """
+    Huella de libro a partir de hashes de capítulo YA calculados.
+
+    Existe para que quien ya tenga los hashes (p. ej. la caché por libro de
+    jobs.py) no tenga que volver a hashear el texto completo solo para obtener
+    la huella.  Devuelve None si no hay ningún hash.
+    """
+    hashes = sorted(chapter_hashes)
+    if not hashes:
+        return None
+    return hashlib.md5('|'.join(hashes).encode('utf-8')).hexdigest()
+
+
 def book_fingerprint(chapters):
     """
     Huella de libro independiente del orden: MD5 del conjunto ORDENADO de
@@ -26,8 +40,7 @@ def book_fingerprint(chapters):
     """
     if not chapters:
         return None
-    hashes = sorted(get_text_hash(t) for t in chapters.values())
-    return hashlib.md5('|'.join(hashes).encode('utf-8')).hexdigest()
+    return fingerprint_from_hashes(get_text_hash(t) for t in chapters.values())
 
 
 def get_simhash(text, hash_size=64):

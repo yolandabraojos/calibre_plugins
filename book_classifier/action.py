@@ -126,6 +126,14 @@ class BookClassifierAction(InterfaceAction):
                 'author_fallback':   prefs.get('ml_author_fallback', True),
                 'author_dominance':  prefs.get('ml_author_dominance', 0.6),
                 'ai_batch_ref':      prefs.get('llm_batch', 10),
+                # Nivel de promocion: lee (nunca escribe) el campo dedicado de
+                # la IA en la nube; si su confianza es muy alta, se usa como
+                # clasificacion (ver ml_jobs.run_classify_chunk_task).
+                'llm_library_field':   prefs.get('llm_library_field', '#libreria_ia'),
+                'llm_library_prefix':  prefs.get('llm_library_prefix', 'Biblioteca IA: '),
+                'llm_conf_field':      prefs.get('llm_conf_field', '#confianza_ia'),
+                'llm_promote_enabled':   prefs.get('llm_promote_enabled', True),
+                'llm_promote_threshold': prefs.get('llm_promote_threshold', 0.90),
             }
 
             missing = self._check_missing_fields(settings)
@@ -196,6 +204,9 @@ class BookClassifierAction(InterfaceAction):
             checks.append((settings['subtitle_field'], 'subtítulo'))
         if settings.get('group_unify'):
             checks.append((settings['universe_field'], 'universo'))
+        if settings.get('llm_promote_enabled'):
+            checks.append((settings.get('llm_library_field'), 'libreria IA (promocion)'))
+            checks.append((settings.get('llm_conf_field'), 'confianza IA (promocion)'))
         missing = []
         seen = set()
         for field, uso in checks:
@@ -382,6 +393,10 @@ class BookClassifierAction(InterfaceAction):
         mood_field = settings.get('mood_field', 'tags')
         lib_prefix = settings.get('library_prefix', 'Biblioteca: ')
         lib_prefix_eff = lib_prefix if lib_field == 'tags' else ''
+        # Campo DEDICADO de la libreria IA (destino real del rescate, ver
+        # llm_jobs.run_rescue_batch_task): hace falta su valor previo para que
+        # el merge no pierda datos si overwrite=False.
+        llm_lib_field = settings.get('llm_library_field') or ''
         books = []
         for bid in book_ids:
             try:
@@ -413,6 +428,8 @@ class BookClassifierAction(InterfaceAction):
                     return None
 
             prev = {lib_field: _fval(lib_field), mood_field: _fval(mood_field)}
+            if llm_lib_field:
+                prev[llm_lib_field] = _fval(llm_lib_field)
             idioma = ','.join(sorted(str(x) for x in languages))
             books.append({'id': bid, 'title': title, 'authors': authors,
                           'comments': comments, 'tags': tags, 'idioma': idioma,
@@ -447,8 +464,29 @@ class BookClassifierAction(InterfaceAction):
                 'llm_serie_field': prefs.get('llm_serie_field', '#serie_ia'),
                 'llm_write_conf':  prefs.get('llm_write_conf', True),
                 'llm_conf_field':  prefs.get('llm_conf_field', '#confianza_ia'),
+                # Campo DEDICADO de la IA: el rescate escribe AQUI (nunca en
+                # 'library_field', el campo principal de la clasificacion local).
+                'llm_library_field':  prefs.get('llm_library_field', '#libreria_ia'),
+                'llm_library_prefix': prefs.get('llm_library_prefix', 'Biblioteca IA: '),
                 'force_all':       force,
             }
+
+            llm_lib_field = settings.get('llm_library_field')
+            if llm_lib_field and llm_lib_field != 'tags':
+                try:
+                    valid = set(self.gui.current_db.new_api.field_metadata.all_field_keys())
+                except Exception:
+                    valid = None
+                if valid is not None and llm_lib_field not in valid:
+                    error_dialog(
+                        self.gui, 'Columna no encontrada',
+                        'La columna configurada para la libreria detectada por la '
+                        'IA ({}) no existe en esta biblioteca.\n\nCreala '
+                        '(Preferencias -> Anadir columnas personalizadas) o '
+                        'corrige la configuracion del plugin antes de '
+                        'rescatar.'.format(llm_lib_field), show=True)
+                    return
+
             books = self._prefetch_books(book_ids, settings)
 
             # Filtra los candidatos ANTES de lanzar nada (rapido, sin red) y

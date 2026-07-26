@@ -4,6 +4,7 @@ from __future__ import unicode_literals, division, absolute_import, print_functi
 import logging
 import os
 import re
+import threading
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
 
@@ -337,6 +338,106 @@ def _identity_chapter_map(chapters):
     } for name in chapters]
 
 
+# ---------------------------------------------------------------------------
+# Caché de hashes por libro (un hasheo por libro, no por par)
+# ---------------------------------------------------------------------------
+# Antes, cada par re-hasheaba el texto COMPLETO de sus dos libros dentro de
+# compare_books_ultrafast().  Un libro presente en k pares se hasheaba k veces:
+# en un grupo de k copias, k*(k-1) hasheos donde bastan k.
+#
+# Ahora cada libro se hashea UNA vez y se guarda:
+#   - fingerprint : MD5 del conjunto ordenado de hashes de capítulo, que sirve
+#                   para descartar un par comparando dos cadenas.
+#   - hashes      : {nombre_capítulo: hash}, que permite construir el
+#                   chapter_map de los pares confirmados sin volver a hashear.
+#   - ignored     : los ficheros descartados, para el informe.
+#
+# El tope de la caché es alto porque lo almacenado es ligero (hashes, no
+# texto): interesa que sobreviva a la purga de la caché de capítulos de
+# extractor.py, que sí es pesada y se vacía entera al llegar a su límite.
+
+_FP_CACHE = {}
+_FP_CACHE_LOCK = threading.Lock()
+_FP_CACHE_MAX = 20000
+
+
+def _book_hashes_cached(path):
+    """
+    Devuelve (fingerprint, {nombre: hash_capítulo}, ignored) para el libro en
+    'path', memoizado por (path, mtime, size).
+
+    fingerprint es None si el libro no tiene capítulos procesables: en ese caso
+    NO debe agruparse con nadie, porque dos libros sin texto extraíble no son
+    duplicados el uno del otro.
+    """
+    from .extractor import extract_book_chapters_cached, _cache_key
+    from .comparator import fingerprint_from_hashes, get_text_hash
+
+    key = _cache_key(path)
+    if key is not None:
+        with _FP_CACHE_LOCK:
+            hit = _FP_CACHE.get(key)
+        if hit is not None:
+            fp, hashes, ignored = hit
+            return fp, dict(hashes), list(ignored)
+
+    chapters, ignored = extract_book_chapters_cached(path)
+    # Un solo hasheo del texto por capítulo: la huella se deriva de esos mismos
+    # hashes en lugar de recalcularlos con book_fingerprint().
+    hashes = {name: get_text_hash(text) for name, text in chapters.items()}
+    fp = fingerprint_from_hashes(hashes.values())
+
+    if key is not None:
+        with _FP_CACHE_LOCK:
+            if len(_FP_CACHE) >= _FP_CACHE_MAX:
+                _FP_CACHE.clear()
+            _FP_CACHE[key] = (fp, hashes, ignored)
+    return fp, dict(hashes), list(ignored)
+
+
+def _chapter_map_from_hashes(hashes_a, hashes_b):
+    """
+    Construye el chapter_map de un par ya confirmado como idéntico, usando los
+    hashes cacheados (sin volver a hashear el texto).
+
+    Replica exactamente el emparejamiento de comparator.compare_books_ultrafast:
+    se recorren los capítulos de A en orden y cada uno se casa con el primer
+    capítulo de B aún libre que tenga el mismo hash.  Devuelve None si el
+    emparejamiento no es total (no debería ocurrir con huellas iguales, y actua
+    como verificación redundante de la huella).
+    """
+    if len(hashes_a) != len(hashes_b) or not hashes_a:
+        return None
+
+    names_b  = list(hashes_b.keys())
+    values_b = [hashes_b[n] for n in names_b]
+
+    chapter_map = []
+    matched_b   = set()
+    for name_a, h_a in hashes_a.items():
+        found = False
+        for idx, h_b in enumerate(values_b):
+            if idx not in matched_b and h_a == h_b:
+                matched_b.add(idx)
+                chapter_map.append({
+                    'chapter_a':    name_a,
+                    'best_match_b': names_b[idx],
+                    'similarity':   100.0,
+                    'is_unique':    False,
+                })
+                found = True
+                break
+        if not found:
+            return None
+    return chapter_map
+
+
+def clear_fingerprint_cache():
+    """Vacía la caché de hashes por libro.  Útil entre ejecuciones."""
+    with _FP_CACHE_LOCK:
+        _FP_CACHE.clear()
+
+
 def _extract_pair_parallel(path_a, path_b):
     """
     Extrae los capítulos de ambos libros EN PARALELO usando la versión
@@ -455,9 +556,10 @@ def _compare_pairs_chunk_ultrafast(result_holder, pairs_chunk, log=None, abort=N
     Para cada par:
       0. Si los ficheros son binariamente idénticos -> 100 % inmediato
          (sin extraer ni comparar texto).
-      1. Si no, extrae los capítulos de ambos libros (en paralelo, cacheados).
-      2. Llama a compare_books_ultrafast(), que detiene la comparación
-         en cuanto detecta que el resultado será inferior al 100%.
+      1. Si no, calcula la HUELLA de contenido de cada libro (una vez por
+         libro, memoizada) y descarta el par si las huellas difieren.
+      2. Solo si las huellas coinciden llama a compare_books_ultrafast(),
+         que construye el chapter_map y verifica la coincidencia exacta.
       3. Solo añade el par a los resultados si la similitud es exactamente 100%.
       4. Los pares con similitud < 100% se descartan silenciosamente.
 
@@ -466,7 +568,7 @@ def _compare_pairs_chunk_ultrafast(result_holder, pairs_chunk, log=None, abort=N
     duplicados exactos.
     """
     from .extractor import extract_book_chapters_cached
-    from .comparator import compare_books_ultrafast
+    from .comparator import get_text_hash  # noqa: F401  (usado vía _book_hashes_cached)
 
     logger.info('[CHUNK-UF] started. pairs=%d holder_id=%d', len(pairs_chunk), id(result_holder))
     results = []
@@ -509,28 +611,33 @@ def _compare_pairs_chunk_ultrafast(result_holder, pairs_chunk, log=None, abort=N
                 })
                 continue
 
-            _notify(0.3, 'Ultrarrápido {}/{}: Extrayendo libros (IDs {} / {})'.format(
+            # 1. Cada libro se hashea UNA vez (memoizado) y el par se descarta
+            #    comparando dos huellas.  Los pares que no son duplicados
+            #    exactos mueren aquí, sin recorrer capítulo a capítulo.
+            _notify(0.3, 'Ultrarrápido {}/{}: Calculando huellas (IDs {} / {})'.format(
                 n + 1, total, pair['book_a']['id'], pair['book_b']['id']))
-            chaps_a, ignored_a, chaps_b, ignored_b = _extract_pair_parallel(
-                pair['book_a']['path'], pair['book_b']['path'])
+            fp_a, hashes_a, ignored_a = _book_hashes_cached(pair['book_a']['path'])
+            fp_b, hashes_b, ignored_b = _book_hashes_cached(pair['book_b']['path'])
+            if not fp_a or not fp_b or fp_a != fp_b:
+                continue
 
-            _notify(0.6, 'Ultrarrápido {}/{}: Comparando...'.format(n + 1, total))
+            # 2. Huellas iguales -> idénticos capítulo a capítulo.  El mapa se
+            #    construye con los hashes ya cacheados, sin re-hashear texto.
+            _notify(0.6, 'Ultrarrápido {}/{}: Confirmando duplicado...'.format(n + 1, total))
+            chapter_map = _chapter_map_from_hashes(hashes_a, hashes_b)
 
-            cmp = compare_books_ultrafast(chaps_a, chaps_b)
-
-            if cmp is not None:
-                # Similitud exactamente 100 %: incluir en resultados
+            if chapter_map is not None:
                 results.append({
                     'book_a':      pair['book_a'],
                     'book_b':      pair['book_b'],
-                    'similarity':  cmp['global_similarity'],
-                    'chapter_map': cmp.get('chapter_map', []),
-                    'unique_to_a': cmp.get('unique_to_a', []),
-                    'unique_to_b': cmp.get('unique_to_b', []),
+                    'similarity':  100.0,
+                    'chapter_map': chapter_map,
+                    'unique_to_a': [],
+                    'unique_to_b': [],
                     'ignored_a':   ignored_a,
                     'ignored_b':   ignored_b,
                 })
-            # else: similitud < 100 %, par descartado silenciosamente
+            # else: no se pudo emparejar del todo, par descartado
         except Exception:
             logger.exception('[CHUNK-UF] error comparing %s / %s',
                              pair['book_a']['path'], pair['book_b']['path'])

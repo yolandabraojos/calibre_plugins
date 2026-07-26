@@ -289,6 +289,114 @@ def extract_epub_chapters(epub_path):
     return chapters, ignored
 
 
+# ---------------------------------------------------------------------------
+# Procedencia de un EPUB: edición editorial vs conversión casera
+# ---------------------------------------------------------------------------
+# Cuando dos copias tienen EXACTAMENTE el mismo contenido, el criterio para
+# quedarse con una u otra ya no puede salir del texto.  Lo que sí distingue a un
+# EPUB comprado de una conversión hecha en casa son las marcas que deja cada
+# herramienta en el contenedor.
+#
+# Esta función vive en extractor.py a propósito: la usan TANTO el plugin (ui.py,
+# al marcar duplicados) COMO dedupe_cli.py.  Un único sitio, para que no puedan
+# discrepar al elegir qué copia se conserva.
+#
+# Es una HEURÍSTICA, no una certeza: se devuelven también los motivos, para que
+# el informe pueda explicar por qué ganó una copia y el usuario pueda discrepar.
+
+ORIGIN_EDITORIAL   = 'editorial'
+ORIGIN_CALIBRE     = 'calibre'
+ORIGIN_UNKNOWN     = 'desconocido'
+
+# Menor es mejor: se conserva la copia con el rango más bajo.  Un EPUB sin
+# ninguna marca se considera mejor que uno con marcas de Calibre, porque Calibre
+# casi siempre se firma como generador ('bkp') al convertir.
+ORIGIN_RANK = {ORIGIN_EDITORIAL: 0, ORIGIN_UNKNOWN: 1, ORIGIN_CALIBRE: 2}
+
+_FONT_EXTS = ('.otf', '.ttf', '.woff', '.woff2')
+
+
+def epub_provenance(book_path):
+    """
+    Devuelve (origen, motivos) para un EPUB.
+
+    origen es 'editorial', 'calibre' o 'desconocido'.  motivos es una lista de
+    cadenas cortas, aptas para mostrar en un informe.
+
+    Para ficheros que NO son .epub (p. ej. AZW3) devuelve ('desconocido', []):
+    un AZW3 hay que convertirlo con Calibre para leerlo, así que el EPUB
+    resultante llevaría siempre marcas de Calibre y la detección no diría nada
+    del fichero original.  No se adivina: se admite que no se sabe.
+    """
+    if os.path.splitext(book_path)[1].lower() != '.epub':
+        return ORIGIN_UNKNOWN, []
+
+    calibre_hits, editorial_hits = [], []
+    try:
+        with zipfile.ZipFile(book_path, 'r') as zf:
+            names = zf.namelist()
+            lower = [n.lower() for n in names]
+
+            # --- Señales de conversión con Calibre ---
+            if any('jacket' in n for n in lower):
+                calibre_hits.append('portadilla de Calibre (jacket)')
+            if any(('index_split_' in n) or ('part0000' in n) for n in lower):
+                calibre_hits.append('ficheros troceados por Calibre')
+
+            # --- Señales de origen editorial (por presencia de ficheros) ---
+            if 'meta-inf/encryption.xml' in lower:
+                editorial_hits.append('fuentes protegidas (encryption.xml)')
+            if any('com.apple.ibooks.display-options' in n for n in lower):
+                editorial_hits.append('metadatos de Apple Books')
+            if any('itunesmetadata.plist' in n for n in lower):
+                editorial_hits.append('metadatos de iTunes')
+            if any(n.endswith(_FONT_EXTS) for n in lower):
+                editorial_hits.append('tipografías incrustadas')
+
+            # --- Señales dentro del OPF ---
+            opf_name = next((n for n in names if n.lower().endswith('.opf')), None)
+            if opf_name:
+                try:
+                    raw = zf.read(opf_name)
+                except Exception:
+                    raw = b''
+                low = raw.lower()
+                if b'calibre' in low:
+                    # Calibre se firma como generador ('bkp') y escribe
+                    # <meta name="calibre:timestamp">.  Es la marca más fiable.
+                    if b'calibre:timestamp' in low:
+                        calibre_hits.append('calibre:timestamp en el OPF')
+                    elif b'bkp' in low or b'calibre-ebook.com' in low:
+                        calibre_hits.append('Calibre firmado como generador')
+                    else:
+                        calibre_hits.append('mención a Calibre en el OPF')
+                if b'scheme="isbn"' in low or b"scheme='isbn'" in low or b'urn:isbn' in low:
+                    editorial_hits.append('ISBN en el OPF')
+                m = re.search(br'<dc:publisher[^>]*>\s*([^<]{2,})</dc:publisher>', raw,
+                              re.IGNORECASE)
+                if m:
+                    pub = m.group(1).strip()
+                    if pub and b'calibre' not in pub.lower():
+                        editorial_hits.append('editorial: {}'.format(
+                            pub.decode('utf-8', 'replace')[:40]))
+    except Exception:
+        logger.debug('No se pudo leer la procedencia de %s', book_path, exc_info=True)
+        return ORIGIN_UNKNOWN, []
+
+    # Las marcas de Calibre mandan: significan que el fichero pasó por una
+    # conversión, que es exactamente lo que queremos evitar conservar.
+    if calibre_hits:
+        return ORIGIN_CALIBRE, calibre_hits
+    if editorial_hits:
+        return ORIGIN_EDITORIAL, editorial_hits
+    return ORIGIN_UNKNOWN, []
+
+
+def origin_rank(origin):
+    """Rango de preferencia (menor gana) para un origen dado."""
+    return ORIGIN_RANK.get(origin, ORIGIN_RANK[ORIGIN_UNKNOWN])
+
+
 def extract_book_chapters(book_path):
     """
     Devuelve (chapters, ignored_files).
@@ -308,10 +416,23 @@ def _find_ebook_convert():
         os.path.join(os.path.dirname(sys.executable), 'ebook-convert.exe'),
         os.path.join(os.path.dirname(sys.executable), 'ebook-convert'),
     ]
+    # Fuera de Calibre (p. ej. dedupe_cli.py con el Python del sistema),
+    # sys.executable no apunta a la carpeta de Calibre y ebook-convert puede no
+    # estar en el PATH: probamos tambien las rutas de instalación habituales.
+    if sys.platform == 'win32':
+        for var in ('PROGRAMFILES', 'PROGRAMFILES(X86)'):
+            base = os.environ.get(var)
+            if base:
+                candidates.append(os.path.join(base, 'Calibre2', 'ebook-convert.exe'))
+                candidates.append(os.path.join(base, 'Calibre', 'ebook-convert.exe'))
+    elif sys.platform == 'darwin':
+        candidates.append('/Applications/calibre.app/Contents/MacOS/ebook-convert')
     for candidate in candidates:
         if candidate and os.path.exists(candidate):
             return candidate
-    raise FileNotFoundError('No se encontró ebook-convert.')
+    raise FileNotFoundError(
+        'No se encontró ebook-convert (viene con Calibre). Añade la carpeta de '
+        'Calibre al PATH para poder analizar ficheros AZW3.')
 
 
 def extract_azw3_chapters(azw3_path):
@@ -331,10 +452,22 @@ def extract_azw3_chapters(azw3_path):
                 '--flow-size', '0',            # sin partición por tamaño
                 '--dont-split-on-page-breaks', # sin partición por saltos de página
             ],
-            capture_output=True, text=True, creationflags=creationflags,
+            # OJO: capture_output SIN text=True, a propósito.
+            #
+            # ebook-convert imprime el título del libro en su salida, y con
+            # text=True Python la decodifica con la codificación local de la
+            # consola (cp1252 en Windows). Un título con caracteres fuera de
+            # cp1252 hacía saltar UnicodeDecodeError dentro del hilo lector de
+            # subprocess, y ese libro quedaba fuera del análisis. Se captura en
+            # bytes y se decodifica aquí, con errors='replace', solo si hay que
+            # construir un mensaje de error.
+            capture_output=True, creationflags=creationflags,
         )
         if proc.returncode != 0:
-            raise RuntimeError('Error convirtiendo AZW3')
+            err = (proc.stderr or b'').decode('utf-8', 'replace').strip()
+            raise RuntimeError('Error convirtiendo AZW3 {!r}: {}'.format(
+                os.path.basename(azw3_path),
+                err[-400:] or 'ebook-convert devolvió {}'.format(proc.returncode)))
         return extract_epub_chapters(epub_path)
 
 

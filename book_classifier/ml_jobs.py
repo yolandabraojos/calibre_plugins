@@ -2,10 +2,17 @@
 """
 Worker en segundo plano para la clasificación con IA local (modelo entrenado).
 
-Tres niveles de decisión de librería (de más a menos fiable):
+Niveles de decisión de librería (de más a menos fiable):
+  0) PROMOCIÓN DESDE LA IA EN LA NUBE (opcional, `llm_promote_enabled`): si el
+     libro ya tiene un valor en el campo DEDICADO del rescate LLM
+     (`llm_library_field`, ver `llm_jobs.py`) con confianza muy alta
+     (`llm_promote_threshold`), se usa tal cual. Solo LEE ese campo, nunca
+     escribe en él — lo único que escribe este módulo es el campo principal
+     (`ml_library_field`).
   1) Predicción individual del modelo, si supera el umbral de confianza.
   2) CONSENSO DE GRUPO: libros del mismo universo (#universe) o, en su defecto,
      misma serie → todos la librería de mayor confianza sumada del grupo.
+     (Puede sobreescribir también un libro resuelto por el nivel 0.)
   3) CONSENSO DE AUTOR (opcional): si un libro sigue dudoso, hereda la librería
      dominante del autor, siempre que el autor tenga una mayoría clara.
 Si nada de eso resuelve, queda "(revisar)".
@@ -36,6 +43,53 @@ def _group_key(db, bid, settings):
     if series:
         return ('S', series)
     return None
+
+
+def _llm_promoted_library(db, bid, settings):
+    """
+    Nivel adicional (promocion): lee -nunca escribe- el campo DEDICADO de la
+    IA en la nube (`llm_library_field`, escrito solo por
+    `llm_jobs.run_rescue_batch_task`) y su confianza (`llm_conf_field`,
+    entero 0-100). Si hay valor y su confianza supera `llm_promote_threshold`
+    (mas estricto que `llm_min_conf`, que solo decide si el rescate resuelve
+    el residuo), devuelve (libreria, confianza_0_1) para usarlo tal cual como
+    clasificacion de este libro. Devuelve None si no aplica. NUNCA escribe en
+    `llm_library_field` -eso lo dejaria contaminado con datos que no vienen
+    de la IA-.
+    """
+    lib_field = (settings.get('llm_library_field') or '').strip()
+    if not lib_field:
+        return None
+    try:
+        raw = db.field_for(lib_field, bid)
+    except Exception:
+        return None
+    if lib_field == 'tags' or isinstance(raw, (list, tuple)):
+        prefix = settings.get('llm_library_prefix', 'Biblioteca IA: ')
+        value = None
+        for v in (raw or []):
+            v = str(v)
+            if v.startswith(prefix):
+                value = v[len(prefix):].strip()
+                break
+    else:
+        value = (raw or '').strip() if isinstance(raw, str) else (raw or None)
+    if not value:
+        return None
+
+    conf_field = (settings.get('llm_conf_field') or '').strip()
+    if not conf_field:
+        return None
+    try:
+        conf_raw = db.field_for(conf_field, bid)
+        conf_frac = float(conf_raw) / 100.0 if conf_raw is not None else 0.0
+    except Exception:
+        return None
+
+    threshold = settings.get('llm_promote_threshold', 0.90)
+    if conf_frac < threshold:
+        return None
+    return value, conf_frac
 
 
 def plan_classify_chunks(gui, book_ids, settings):
@@ -219,10 +273,27 @@ def run_classify_chunk_task(db, subgroups, loose_ids, settings, label,
             text = ' '.join(p for p in parts if p)
 
             res = clf.classify(text, threshold=threshold)
+            library, confidence, uncertain = res['library'], res['confidence'], res['uncertain']
+
+            # Nivel de promocion: si hay un valor de la IA en la nube con
+            # confianza muy alta en su campo DEDICADO, se usa tal cual -sin
+            # tocar ese campo, solo se lee-. Se aplica ANTES del consenso de
+            # grupo/autor, que pueden seguir sobreescribiendolo (misma logica
+            # deliberada que para una prediccion individual bien clasificada,
+            # ver COMPORTAMIENTO_PLUGIN.md).
+            promoted = False
+            if s.get('llm_promote_enabled', True):
+                promo = _llm_promoted_library(db, bid, s)
+                if promo is not None:
+                    library, confidence = promo
+                    uncertain = False
+                    promoted = True
+
             per_book[bid] = {
                 'title': title, 'tags': tags, 'authors': authors,
-                'library': res['library'], 'confidence': res['confidence'],
-                'uncertain': res['uncertain'], 'moods': res['moods'],
+                'library': library, 'confidence': confidence,
+                'uncertain': uncertain, 'moods': res['moods'],
+                'llm_promoted': promoted,
             }
         except Exception as e:
             tb = _tb.format_exc()
@@ -300,7 +371,7 @@ def run_classify_chunk_task(db, subgroups, loose_ids, settings, label,
                 continue
             library, uncertain = pb['library'], pb['uncertain']
             moods = moods_union if unify_moods else pb['moods']
-            tier = 'individual'
+            tier = 'llm_alto' if pb.get('llm_promoted') else 'individual'
             if consensus is not None:
                 if consensus != library or uncertain:
                     result['unified_books'] += 1
@@ -312,7 +383,8 @@ def run_classify_chunk_task(db, subgroups, loose_ids, settings, label,
         pb = per_book.get(bid)
         if pb is None:
             continue
-        _emit(bid, pb, pb['library'], pb['uncertain'], pb['moods'], 'individual')
+        tier = 'llm_alto' if pb.get('llm_promoted') else 'individual'
+        _emit(bid, pb, pb['library'], pb['uncertain'], pb['moods'], tier)
 
     return result
 
