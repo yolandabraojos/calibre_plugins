@@ -9,7 +9,7 @@ la corrupcion por sincronizacion en la nube).
 | Carpeta              | Nombre Calibre       | Version | ZIP maestro (en dist/)      |
 |----------------------|----------------------|---------|-----------------------------|
 | book_classifier      | Book Classifier      | 3.4.1   | dist/BookClassifier.zip     |
-| ebook_comparator     | Ebook Comparator     | 2.9.0   | dist/EbookComparator.zip    |
+| ebook_comparator     | Ebook Comparator     | 2.9.5   | dist/EbookComparator.zip    |
 | fix_metadata         | Fix Metadata         | 1.7.4   | dist/FixMetadata.zip        |
 | extract_metadata     | Extract Metadata     | 1.3.2   | dist/ExtractMetadata.zip    |
 | all_libraries_stats  | All Libraries Stats  | 1.0.5   | dist/AllLibrariesStats.zip  |
@@ -41,12 +41,15 @@ Flujo en DOS FASES, para no repetir la parte lenta:
 - **Antes de borrar exporta una copia** con `calibredb export` a
   `dedupe_out/exportadas_<fecha>/` (ficheros + portada + OPF). Si la exportacion
   falla, NO se borra nada de esa biblioteca. `--no-export` lo desactiva.
-  Es la unica copia que no caduca: sin `--permanent` los ficheros van a la
-  papelera de Windows y a la de la biblioteca (`.caltrash`), pero **esta se purga
-  a los pocos dias** y un disco de red puede no tener papelera. Ademas
-  `calibredb remove` borra la FILA de `metadata.db`, asi que recuperar solo el
-  fichero no devuelve el libro a Calibre: hace falta la copia de `metadata.db`,
-  o "Restaurar libros borrados recientemente" en la interfaz.
+  Antes de borrar se comprueba que la copia esta COMPLETA (un `metadata.opf` por
+  libro); si faltan, no se borra nada de esa biblioteca.
+- **La papelera de Calibre NO es una red de seguridad fiable.** Comprobado en la
+  biblioteca real de Yolanda: tras borrar 1909 libros con `calibredb remove` sin
+  `--permanent`, "Restaurar libros borrados recientemente" aparecio VACIO
+  (0 libros, 0 formatos). Ademas su ajuste "Permanently delete after" estaba en
+  "on close", que vacia la papelera al cerrar Calibre. Tratar el borrado como
+  DEFINITIVO: lo unico que recupera los ficheros es la carpeta exportada, y lo
+  unico que recupera la base de datos es el `metadata.db.bak-*`.
 - `--apply` **valida el plan** antes de borrar: si un libro cambio de id, titulo,
   ruta, tamano o mtime desde el escaneo, esa entrada se rechaza. Calibre reutiliza
   los ids liberados, asi que sin esto un plan viejo podria borrar otro libro.
@@ -64,6 +67,36 @@ Flujo en DOS FASES, para no repetir la parte lenta:
   (p. ej. un PDF o un MOBI extra). EPUB y AZW3 **no** protegen: son los que se
   comparan y el criterio ya decide entre ellos, asi que proteger un AZW3 "por
   ser el unico AZW3" impediria borrarlo nunca.
+
+### Convertir a EPUB los registros que solo tienen AZW3
+
+`dedupe.cmd --convert-azw3 --root "..."` es un modo APARTE que **escribe** en la
+biblioteca (exige Calibre cerrado); el escaneo se lanza despues.
+
+- Alcance: registros con AZW3 y **sin** EPUB. Los que ya tienen ambos no se tocan.
+- `ebook-convert ... --flow-size 0 --dont-split-on-page-breaks` (evita los
+  fragmentos `partNNNN_split_00M.html`) y luego `calibredb add_format` al MISMO id.
+- **El AZW3 se conserva**: la operacion es reversible borrando el formato EPUB.
+  `add_format` es aditivo, asi que no hace falta exportar antes.
+- **El cuello de botella era `calibredb add_format`**, no `ebook-convert`: cada
+  llamada arranca Calibre entero (~2 s), y en serie son mas de una hora para 1600
+  libros. Medido: 0,29 libros/s con `--jobs 20` y 0,28 con `--jobs 6`, identico,
+  porque el paralelismo de la conversion no cambiaba nada. Ahora los EPUB se
+  acumulan (`--batch`, 100 por defecto) y se anaden de golpe con UNA invocacion de
+  `calibre-debug -e` que usa `db.new_api.add_format`. Si no hay `calibre-debug`,
+  cae a `calibredb` de uno en uno y avisa.
+- Tuberia continua, no por lotes: con lotes, mientras se anadian los formatos no
+  se convertia nada. El resumen imprime que porcentaje del tiempo se fue en anadir.
+- Ctrl-C: mata las conversiones en marcha (`taskkill /T` en Windows, con barridos
+  sucesivos para cerrar la carrera con los hilos que estaban lanzando), **anade lo
+  ya convertido** antes de salir y borra el temporal con `ignore_errors` (en
+  Windows no se puede eliminar un fichero en uso). Repetir el comando reanuda.
+- Respalda `metadata.db` de cada biblioteca. Un fallo (tipico: DRM) no aborta la
+  tanda: se recoge en `dedupe_out/conversion_azw3_<fecha>.txt` con la linea `id:`
+  de los convertidos. `--ids 1,2,3` limita el alcance para probar.
+- Motivo: los AZW3 son el coste dominante del escaneo (se reconvierten en cada
+  pasada) y su huella sale de una conversion al vuelo, que puede no coincidir con
+  la de una copia EPUB sana del mismo libro.
 
 ### Criterio de que copia se conserva (UNICO, compartido)
 

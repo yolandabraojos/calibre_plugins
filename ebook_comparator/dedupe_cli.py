@@ -28,7 +28,15 @@ Flujo en DOS FASES (la parte lenta no se repite):
 
 El script NUNCA escribe en metadata.db: lo abre en modo solo lectura y el
 borrado lo ejecuta 'calibredb remove' (o api.remove_books bajo calibre-debug),
-sin --permanent, de modo que va a la papelera de la biblioteca.
+sin --permanent.
+
+AVISO comprobado en la practica: eso NO garantiza poder deshacerlo desde
+Calibre.  En una biblioteca real, tras borrar con calibredb, "Restaurar libros
+borrados recientemente" apareció VACIO (0 libros, 0 formatos).  Ademas la propia
+opcion "Permanently delete after" de Calibre puede estar en "on close", que
+vacia la papelera al cerrar el programa.  Por eso la copia que de verdad
+protege es la que hace este script antes de borrar: la carpeta exportada
+(ficheros + portada + OPF) y el respaldo de metadata.db.
 """
 
 from __future__ import absolute_import, division, print_function, unicode_literals
@@ -42,9 +50,12 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from collections import defaultdict, OrderedDict
 
@@ -164,6 +175,76 @@ def check_lxml():
         '\nNo funciono sin lxml a proposito: el texto extraido seria distinto y se\n'
         'perderian duplicados reales.'.format(
             exe=exe, script=os.path.join(_HERE, 'dedupe_cli.py')))
+
+
+def inspect_book(path):
+    """
+    Diagnostico de UN libro: por que se extraen (o no) sus capitulos.
+
+    Pensado para los libros que el informe marca como "sin contenido
+    comparable": muestra el contenido del ZIP, si el OPF se puede interpretar,
+    que items declara y que se descarto y por que.
+    """
+    import extractor
+    print('Fichero: {}'.format(path))
+    if not os.path.exists(path):
+        print('  NO EXISTE.')
+        return 1
+    print('Tamano : {}'.format(human_size(_safe_size(path))))
+    ext = os.path.splitext(path)[1].lower()
+    print('Formato: {}'.format(ext or '(sin extension)'))
+
+    if ext == '.epub':
+        import zipfile
+        try:
+            zf = zipfile.ZipFile(path)
+        except Exception as exc:
+            print('  NO es un ZIP valido: {}'.format(exc))
+            return 1
+        names = zf.namelist()
+        print('\nContenido del ZIP: {} entradas'.format(len(names)))
+        for n in names[:40]:
+            print('   {}'.format(n))
+        if len(names) > 40:
+            print('   ... y {} mas'.format(len(names) - 40))
+
+        opf = next((n for n in names if n.lower().endswith('.opf')), None)
+        print('\nOPF: {}'.format(opf or 'NO ENCONTRADO'))
+        if opf:
+            try:
+                from lxml import etree
+                etree.fromstring(zf.read(opf))
+                print('  se interpreta correctamente')
+            except Exception as exc:
+                print('  NO SE PUEDE INTERPRETAR: {}'.format(exc))
+                print('  (sin OPF legible hay que reconocer los capitulos por '
+                      'extension o por contenido)')
+        items = extractor._get_manifest_html_items(zf, names)
+        print('  items HTML segun el manifest: {}'.format(len(items)))
+        for n in sorted(items)[:10]:
+            print('     {}'.format(n))
+
+    chapters, ignored = extractor.extract_book_chapters(path)
+    print('\nCapitulos extraidos: {}'.format(len(chapters)))
+    for n, text in list(chapters.items())[:5]:
+        print('   {:50} {} caracteres'.format(n[:50], len(text)))
+    if len(chapters) > 5:
+        print('   ... y {} mas'.format(len(chapters) - 5))
+    print('\nDescartados: {}'.format(len(ignored)))
+    reasons = defaultdict(list)
+    for i in ignored:
+        reasons[i['reason']].append(i['name'])
+    for reason, items in sorted(reasons.items()):
+        print('   {} ({}): {}'.format(reason, len(items), ', '.join(items[:4])))
+
+    origin, why = extractor.epub_provenance(path)
+    print('\nProcedencia: {} {}'.format(origin, why or ''))
+    import comparator
+    print('Huella     : {}'.format(comparator.book_fingerprint(chapters) or 'NINGUNA'))
+    if not chapters:
+        print('\n-> Este libro NO entra en la comparacion. Pega esta salida para')
+        print('   que se pueda ajustar la deteccion.')
+    return 0
 
 
 def doctor():
@@ -548,6 +629,7 @@ def split_cached(books, cache):
                 'error': rec.get('error'), 'format': b['format'],
                 'origin': rec.get('origin') or 'desconocido',
                 'origin_reasons': rec.get('origin_reasons') or [],
+                'issues': rec.get('issues') or [],
                 'elapsed': 0.0, 'cached': True,
             }
         else:
@@ -569,6 +651,7 @@ def update_cache(cache, books, fps):
             'n_chapters': r.get('n_chapters'), 'n_ignored': r.get('n_ignored'),
             'error': r.get('error'), 'origin': r.get('origin'),
             'origin_reasons': r.get('origin_reasons') or [],
+            'issues': r.get('issues') or [],
         }
     return cache
 
@@ -586,7 +669,8 @@ def fingerprint_one(task):
     t0 = time.time()
     out = {'uid': uid, 'sha1': None, 'fingerprint': None, 'format': fmt,
            'n_chapters': 0, 'n_ignored': 0, 'error': None, 'elapsed': 0.0,
-           'cached': False, 'origin': 'desconocido', 'origin_reasons': []}
+           'cached': False, 'origin': 'desconocido', 'origin_reasons': [],
+           'issues': []}
     try:
         import extractor
         import comparator
@@ -596,7 +680,9 @@ def fingerprint_one(task):
         origin, reasons = extractor.epub_provenance(path)
         out['origin'] = origin
         out['origin_reasons'] = reasons
-        chapters, ignored = extractor.extract_book_chapters(path)
+        issues = []
+        chapters, ignored = extractor.extract_book_chapters(path, issues=issues)
+        out['issues'] = sorted(set(issues))
         out['n_chapters'] = len(chapters)
         out['n_ignored'] = len(ignored)
         out['fingerprint'] = comparator.book_fingerprint(chapters)
@@ -732,6 +818,7 @@ def group_duplicates(books, fps, min_chapters=1):
         b['n_ignored'] = r['n_ignored']
         b['origin'] = r.get('origin') or 'desconocido'
         b['origin_reasons'] = r.get('origin_reasons') or []
+        b['issues'] = r.get('issues') or []
         if r['error']:
             b['skip_reason'] = 'error de extraccion: {}'.format(r['error'])
             skipped.append(b)
@@ -763,6 +850,26 @@ def group_duplicates(books, fps, min_chapters=1):
     groups.sort(key=lambda g: (not g['cross'], -len(g['books']),
                                -sum(b['size'] for b in g['books'])))
     return groups, skipped
+
+
+def books_with_issues(books, fps):
+    """
+    Libros con problemas de formato, esten duplicados o no.
+
+    Se recorren TODOS los libros analizados, no solo los de algun grupo: un
+    libro unico y mal formado tambien conviene reconvertirlo.
+    """
+    by_uid = {b['uid']: b for b in books}
+    out = []
+    for uid, r in fps.items():
+        issues = r.get('issues') or []
+        if not issues:
+            continue
+        b = dict(by_uid[uid])
+        b['issues'] = issues
+        out.append(b)
+    out.sort(key=lambda b: (b['lib_index'], b['id']))
+    return out
 
 
 def _origin_rank(origin):
@@ -1209,8 +1316,12 @@ def export_before_delete(library_path, ids, dest, batch=100):
 
 def delete_ids(library_path, ids, batch=200):
     """
-    Borra 'ids' de 'library_path' con calibredb (sin --permanent: papelera de la
-    biblioteca, reversible).  Devuelve (n_borrados, errores).
+    Borra 'ids' de 'library_path' con calibredb, sin --permanent.
+
+    Que no sea --permanent NO implica que se pueda deshacer desde Calibre: se ha
+    comprobado que la papelera de la biblioteca puede quedar vacia tras un
+    borrado por linea de comandos.  Trata este borrado como definitivo y confia
+    en la copia exportada.  Devuelve (n_borrados, errores).
     """
     exe = find_calibredb()
     if not exe:
@@ -1271,7 +1382,10 @@ def apply_plan(plan, args):
             print('  {}: ids {}{}'.format(
                 lib, ','.join(str(e['id']) for e in entries[:20]),
                 ', ...' if len(entries) > 20 else ''))
-        print('El borrado lo ejecuta Calibre (papelera de la biblioteca): es reversible.')
+        print('NO cuentes con deshacerlo desde Calibre: su papelera puede estar')
+        print('vacia (depende de "Permanently delete after", que puede ser "on close")')
+        print('y en cualquier caso caduca. Tu copia real es la carpeta exportada')
+        print('y el respaldo de metadata.db que se hacen justo antes de borrar.')
         try:
             answer = input('Escribe BORRAR para confirmar: ').strip()
         except EOFError:
@@ -1286,8 +1400,43 @@ def apply_plan(plan, args):
         export_root = args.export_dir or os.path.join(
             args.out_dir or _DEFAULT_OUT_DIR,
             'exportadas_{}'.format(time.strftime('%Y%m%d_%H%M%S')))
-        print('Exportando una copia de cada libro antes de borrarlo en:')
-        print('  {}'.format(export_root))
+
+        # Presupuesto de disco ANTES de empezar.  'calibredb export' escribe por
+        # cada libro: sus ficheros, la portada y un metadata.opf, asi que salen
+        # entre 2 y 3 ficheros por libro y el tamano supera al de los EPUB
+        # comparados.  Con 1900 libros eso son varios GB, y conviene saberlo
+        # antes, no a mitad.
+        approx = sum(e.get('size') or 0
+                     for entries in ok_by_lib.values() for e in entries)
+        print('\nExportando una copia de cada libro antes de borrarlo:')
+        print('  destino: {}'.format(export_root))
+        print('  {} libro{}, al menos {} (mas portadas, OPF y otros formatos:'
+              ' cuenta con cerca del doble)'.format(
+                  total, 's' if total != 1 else '', human_size(approx)))
+        try:
+            base = export_root
+            while base and not os.path.isdir(base):
+                parent = os.path.dirname(base)
+                if parent == base:
+                    break
+                base = parent
+            free = shutil.disk_usage(base).free
+            print('  libre en destino: {}'.format(human_size(free)))
+            if free < approx * 2:
+                print('  AVISO: puede no caber. Usa --export-dir para mandarlo a')
+                print('  otro disco. Con --no-export te quedas solo con el respaldo')
+                print('  de metadata.db, que restaura la base de datos pero NO los')
+                print('  ficheros borrados.')
+                if not args.yes:
+                    try:
+                        if input('  Escribe SEGUIR para continuar igualmente: ').strip() != 'SEGUIR':
+                            print('  Cancelado: no se ha borrado nada.')
+                            return {'deleted': 0, 'errors': ['espacio insuficiente'],
+                                    'rejected': rejected, 'backups': {}}
+                    except EOFError:
+                        pass
+        except Exception:
+            pass
 
     for lib, entries in sorted(ok_by_lib.items()):
         ids = [e['id'] for e in entries]
@@ -1303,7 +1452,32 @@ def apply_plan(plan, args):
                 for e in exp_errs:
                     print('    ! {}'.format(e))
                 continue
-            print('  {}: exportados {} ficheros'.format(lib, n_files))
+            exported_bytes = 0
+            for _r, _d, _f in os.walk(sub):
+                for name in _f:
+                    try:
+                        exported_bytes += os.path.getsize(os.path.join(_r, name))
+                    except Exception:
+                        pass
+            # La copia exportada es la unica red de seguridad real, asi que se
+            # comprueba que esta completa ANTES de borrar: calibredb escribe un
+            # metadata.opf por libro, de modo que debe haber tantos OPF como
+            # libros.  Si faltan, no se borra nada de esta biblioteca.
+            n_opf = 0
+            for _r, _d, _f in os.walk(sub):
+                n_opf += sum(1 for name in _f if name.lower().endswith('.opf'))
+            print('  {}: exportados {} ficheros, {} (de {} libro{}: cada uno '
+                  'aporta su fichero, su portada y un metadata.opf)'.format(
+                      lib, n_files, human_size(exported_bytes), len(ids),
+                      's' if len(ids) != 1 else ''))
+            if n_opf < len(ids):
+                msg = ('la copia exportada esta INCOMPLETA: {} metadata.opf para '
+                       '{} libros. NO borro nada de {}.'.format(n_opf, len(ids), lib))
+                errors.append(msg)
+                print('    ! {}'.format(msg))
+                continue
+            print('    copia verificada: {} metadata.opf para {} libros'.format(
+                n_opf, len(ids)))
 
         # 2. Copia de metadata.db.
         if not args.no_backup:
@@ -1482,6 +1656,7 @@ def write_html_report(out_path, groups, skipped, stats):
         if stats.get('prefer_libraries') else ''))
     p.append('<header class="summary"><div class="stats">')
     for v, l in ((stats['n_books'], 'libros analizados'),
+                 (len(stats.get('problem_books') or ()), 'a reconvertir'),
                  (len(groups), 'grupos duplicados'),
                  (stats['n_cross'], 'grupos entre bibliotecas'),
                  (stats['n_drop'], 'copias sobrantes'),
@@ -1539,10 +1714,89 @@ def write_html_report(out_path, groups, skipped, stats):
                 ','.join(str(i) for i in sorted(ids))))
         p.append('</div>')
 
+    problem_books = stats.get('problem_books') or ()
+    if problem_books:
+        try:
+            import extractor
+            labels = extractor.ISSUE_LABELS
+        except Exception:
+            labels = {}
+        p.append('<h2 class="sec">Libros que conviene reconvertir ({})</h2>'
+                 .format(len(problem_books)))
+        p.append('<div class="card"><p class="meta">EPUB mal formados: se han '
+                 'podido leer (o no), pero su estructura interna tiene defectos. '
+                 'Reconvertirlos con Calibre (Convertir libros &rarr; EPUB) suele '
+                 'dejarlos limpios y mejora la deteccion de duplicados.</p>')
+
+        # Lineas pegables, por biblioteca y por tipo de problema.
+        by_lib = defaultdict(lambda: defaultdict(list))
+        for b in problem_books:
+            for key in b['issues']:
+                by_lib[b['library']][key].append(b['id'])
+        for lib in libraries:
+            per_issue = by_lib.get(lib)
+            if not per_issue:
+                continue
+            all_ids = sorted({i for ids in per_issue.values() for i in ids})
+            p.append('<p class="meta" style="margin:.6rem 0 0"><b>{}</b> '
+                     '&mdash; {} libros</p>'.format(
+                         html.escape(_short_lib(lib, libraries)), len(all_ids)))
+            p.append('<span class="idsearch">id:{}</span>'.format(
+                ','.join(str(i) for i in all_ids)))
+            for key, ids in sorted(per_issue.items()):
+                p.append('<p class="meta" style="margin:0">{} ({})</p>'.format(
+                    html.escape(labels.get(key, key)), len(set(ids))))
+                p.append('<span class="idsearch">id:{}</span>'.format(
+                    ','.join(str(i) for i in sorted(set(ids)))))
+
+        p.append('<table><thead><tr><th>id</th><th>Biblioteca</th><th>Titulo</th>'
+                 '<th>Problemas</th></tr></thead><tbody>')
+        for b in problem_books:
+            p.append('<tr><td class="num">{}</td><td class="lib">{}</td>'
+                     '<td>{}<br><span class="path">{}</span></td><td>{}</td></tr>'
+                     .format(b['id'], html.escape(_short_lib(b['library'], libraries)),
+                             html.escape(b['title'] or '(sin titulo)'),
+                             html.escape(b['path']),
+                             '<br>'.join(html.escape(labels.get(k, k))
+                                         for k in b['issues'])))
+        p.append('</tbody></table></div>')
+
     if skipped:
         p.append('<div class="card"><details><summary>{} libros no analizables'
-                 '</summary><table><thead><tr><th>id</th><th>Biblioteca</th>'
-                 '<th>Titulo</th><th>Motivo</th></tr></thead><tbody>'.format(len(skipped)))
+                 '</summary>'.format(len(skipped)))
+
+        # Busquedas pegables tambien para los NO analizables: son los que hay que
+        # revisar a mano (ficheros danados, sin texto extraible...), asi que
+        # conviene poder seleccionarlos en Calibre igual que las copias sobrantes.
+        # Un id solo vale dentro de su biblioteca, de ahi una linea por cada una.
+        # Y dentro de cada biblioteca se separa por MOTIVO, porque un fichero
+        # corrupto y uno sin texto no se arreglan igual.
+        skipped_by_lib = defaultdict(lambda: defaultdict(list))
+        for b in skipped:
+            motivo = (b.get('skip_reason') or '').split(':')[0].strip() or 'sin motivo'
+            skipped_by_lib[b['library']][motivo].append(b['id'])
+
+        p.append('<p class="meta">Pega estas lineas en la busqueda de Calibre '
+                 '(cada biblioteca por separado) para revisarlos.</p>')
+        for lib in libraries:
+            per_reason = skipped_by_lib.get(lib)
+            if not per_reason:
+                continue
+            all_ids = sorted(i for ids in per_reason.values() for i in ids)
+            p.append('<p class="meta" style="margin:.6rem 0 0"><b>{}</b> '
+                     '&mdash; {} libros</p>'.format(
+                         html.escape(_short_lib(lib, libraries)), len(all_ids)))
+            p.append('<span class="idsearch">id:{}</span>'.format(
+                ','.join(str(i) for i in all_ids)))
+            if len(per_reason) > 1:
+                for motivo, ids in sorted(per_reason.items()):
+                    p.append('<p class="meta" style="margin:0">{} ({})</p>'.format(
+                        html.escape(motivo), len(ids)))
+                    p.append('<span class="idsearch">id:{}</span>'.format(
+                        ','.join(str(i) for i in sorted(ids))))
+
+        p.append('<table><thead><tr><th>id</th><th>Biblioteca</th>'
+                 '<th>Titulo</th><th>Motivo</th></tr></thead><tbody>')
         for b in sorted(skipped, key=lambda x: (x['lib_index'], x['id'])):
             p.append('<tr><td class="num">{}</td><td class="lib">{}</td>'
                      '<td>{}<br><span class="path">{}</span></td><td>{}</td></tr>'.format(
@@ -1555,6 +1809,627 @@ def write_html_report(out_path, groups, skipped, stats):
     with codecs.open(out_path, 'w', 'utf-8') as fh:
         fh.write('\n'.join(p))
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Conversion de los registros que solo tienen AZW3
+# ---------------------------------------------------------------------------
+# Un registro con AZW3 y sin EPUB obliga a convertirlo con ebook-convert en CADA
+# escaneo, y eso domina el tiempo: un EPUB se lee en milesimas, un AZW3 cuesta
+# segundos.  Ademas la huella sale del EPUB que Calibre genera al vuelo, cuyo
+# troceado puede no coincidir con el de una copia EPUB sana del mismo libro, asi
+# que se pierden duplicados.
+#
+# Convertir una vez y anadir el EPUB al MISMO registro arregla las dos cosas.
+# El AZW3 original se CONSERVA: el registro queda con AZW3+EPUB, de modo que la
+# operacion es reversible borrando el formato EPUB si algo sale mal.
+#
+# Es un modo aparte, no parte del escaneo: escribe en la biblioteca (y por tanto
+# exige Calibre cerrado), mientras el escaneo es de solo lectura.
+
+CONVERT_FLAGS = ['--flow-size', '0', '--dont-split-on-page-breaks']
+
+
+def _fmt_ratio(ratio):
+    """Segundos por MB, con decimales solo cuando hacen falta."""
+    if not ratio:
+        return '?'
+    return '{:.1f}'.format(ratio) if ratio < 10 else '{:.0f}'.format(ratio)
+
+
+def azw3_only_books(books, only_ids=None):
+    """
+    Registros con AZW3 y SIN EPUB.
+
+    Los que ya tienen ambos no se tocan: su EPUB es lo que se compara, asi que
+    convertir de nuevo no aportaria nada.  Otros formatos (PDF, MOBI) no
+    influyen: lo que importa es que no haya EPUB.
+    """
+    out = []
+    for b in books:
+        fmts = {f.upper() for f in (b.get('formats') or ())}
+        if 'AZW3' not in fmts or 'EPUB' in fmts:
+            continue
+        if only_ids and b['id'] not in only_ids:
+            continue
+        if 'AZW3' not in (b.get('format_paths') or {}):
+            continue
+        out.append(b)
+    out.sort(key=lambda b: (b['lib_index'], b['id']))
+    return out
+
+
+# Procesos de ebook-convert en marcha, para poder cortarlos con Ctrl-C.  Sin
+# esto, al interrumpir quedaban hasta --jobs conversiones corriendo de fondo,
+# consumiendo CPU y escribiendo en el directorio temporal que se intentaba
+# borrar (en Windows no se puede eliminar un fichero en uso).
+_RUNNING_PROCS = set()
+_RUNNING_LOCK = threading.Lock()
+# Bandera de aborto: cierra la carrera entre el barrido de procesos y un hilo que
+# estaba a punto de lanzar el suyo.  Sin ella quedaban conversiones sueltas
+# arrancadas justo despues del Ctrl-C.
+_ABORTING = threading.Event()
+
+
+def _terminate_running_converts():
+    """
+    Corta todas las conversiones en marcha.  Se llama al interrumpir.
+
+    En Windows se usa 'taskkill /T' para llevarse tambien los procesos hijos:
+    matar solo al padre dejaba conversiones vivas consumiendo CPU despues del
+    Ctrl-C, que es justo lo que se quiere evitar.
+    """
+    _ABORTING.set()
+    with _RUNNING_LOCK:
+        procs = list(_RUNNING_PROCS)
+    for proc in procs:
+        try:
+            if sys.platform == 'win32':
+                subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            else:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    # Barridos sucesivos: entre que se mata un proceso y que otro hilo registra
+    # el suyo hay una ventana (Popen ya ha devuelto, pero aun no se ha anotado en
+    # el conjunto).  Se repasa hasta que no quede ninguno, con un tope de tiempo
+    # para no quedarse aqui si algo se resiste.
+    deadline = time.time() + 3.0
+    matados = set(procs)
+    while time.time() < deadline:
+        time.sleep(0.2)
+        with _RUNNING_LOCK:
+            rest = [pr for pr in _RUNNING_PROCS if pr not in matados]
+        if not rest:
+            with _RUNNING_LOCK:
+                if not _RUNNING_PROCS:
+                    break
+            continue
+        for proc in rest:
+            matados.add(proc)
+            try:
+                if sys.platform == 'win32':
+                    subprocess.run(['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                else:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        proc.kill()
+            except Exception:
+                pass
+
+
+def _convert_one(task):
+    """
+    Worker: convierte UN azw3 a epub.
+    Devuelve (uid, epub_path, error, segundos, tamano_origen).
+
+    Solo convierte; no toca la biblioteca.  Anadir el formato se hace en el hilo
+    principal, en serie, porque calibredb escribe en metadata.db.
+    """
+    uid, azw3_path, out_path, timeout = task
+    t0 = time.time()
+    src_size = 0
+    try:
+        src_size = os.path.getsize(azw3_path)
+    except Exception:
+        pass
+    try:
+        from extractor import _find_ebook_convert
+        converter = _find_ebook_convert()
+    except Exception as exc:
+        return (uid, None, 'no encuentro ebook-convert: {}'.format(exc),
+                0.0, src_size)
+
+    if _ABORTING.is_set():
+        return uid, None, 'cancelado', 0.0, src_size
+
+    cmd = [converter, azw3_path, out_path] + CONVERT_FLAGS
+    kwargs = {}
+    if sys.platform == 'win32':
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+    proc = None
+    try:
+        # Popen en lugar de subprocess.run: hace falta la referencia al proceso
+        # para poder matarlo desde fuera al interrumpir.
+        if sys.platform != 'win32':
+            # Grupo propio, para poder matar el proceso y sus hijos de una vez.
+            kwargs['start_new_session'] = True
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, **kwargs)
+        with _RUNNING_LOCK:
+            _RUNNING_PROCS.add(proc)
+        try:
+            _out, err_bytes = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return (uid, None,
+                    'CORTADO: paso de {} s (usa --convert-timeout para darle mas '
+                    'margen)'.format(timeout),
+                    time.time() - t0, src_size)
+        rc = proc.returncode
+    except Exception as exc:
+        return (uid, None, '{}: {}'.format(type(exc).__name__, exc),
+                time.time() - t0, src_size)
+    finally:
+        if proc is not None:
+            with _RUNNING_LOCK:
+                _RUNNING_PROCS.discard(proc)
+
+    if rc != 0 or not os.path.exists(out_path):
+        # La salida se captura en BYTES: ebook-convert imprime el titulo del
+        # libro y con text=True saltaria UnicodeDecodeError en cp1252.
+        err = (err_bytes or b'').decode('utf-8', 'replace').strip()
+        low = err.lower()
+        if 'drm' in low:
+            err = 'protegido con DRM ({})'.format(err[-120:])
+        return (uid, None, err[-300:] or 'ebook-convert devolvio {}'.format(rc),
+                time.time() - t0, src_size)
+    if os.path.getsize(out_path) == 0:
+        return (uid, None, 'ebook-convert genero un EPUB vacio',
+                time.time() - t0, src_size)
+    return uid, out_path, None, time.time() - t0, src_size
+
+
+def find_calibre_debug():
+    """Localiza calibre-debug, que permite ejecutar codigo con la API de Calibre."""
+    cand = [shutil.which('calibre-debug')]
+    exe = 'calibre-debug.exe' if sys.platform == 'win32' else 'calibre-debug'
+    cand.append(os.path.join(os.path.dirname(sys.executable), exe))
+    if sys.platform == 'win32':
+        for var in ('PROGRAMFILES', 'PROGRAMFILES(X86)'):
+            base = os.environ.get(var)
+            if base:
+                cand.append(os.path.join(base, 'Calibre2', exe))
+                cand.append(os.path.join(base, 'Calibre', exe))
+    elif sys.platform == 'darwin':
+        cand.append('/Applications/calibre.app/Contents/MacOS/calibre-debug')
+    for c in cand:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+# Script que se ejecuta DENTRO del interprete de Calibre para anadir muchos
+# formatos de una sola vez.
+#
+# Motivo: 'calibredb add_format' arranca Calibre completo en cada llamada, unos
+# 2 s por libro.  Con 1600 libros eso es mas de una hora dedicada solo a
+# arrancar procesos, y era el verdadero cuello de botella: da igual convertir
+# con 6 o con 20 trabajadores si despues cada anadido cuesta 2 s en serie.
+# Aqui se paga UN arranque para todo el lote.
+_ADDER_SCRIPT = r"""
+import json, sys
+payload = json.load(open(sys.argv[-1], 'rb'))
+from calibre.library import db as _db
+lib = _db(payload['library'])
+api = getattr(lib, 'new_api', lib)
+out = []
+for book_id, path in payload['items']:
+    try:
+        with open(path, 'rb') as fh:
+            api.add_format(int(book_id), 'EPUB', fh, replace=False)
+        out.append([book_id, None])
+    except Exception as exc:
+        out.append([book_id, '{}: {}'.format(type(exc).__name__, exc)])
+try:
+    lib.close()
+except Exception:
+    pass
+sys.stdout.write('DEDUPE_RESULT ' + json.dumps(out))
+"""
+
+
+def add_epub_formats_bulk(library_path, items, workdir):
+    """
+    Anade muchos EPUB de golpe usando la API de Calibre bajo calibre-debug.
+
+    'items' es [(book_id, epub_path), ...].  Devuelve (dict id->error_o_None,
+    error_global).  Si el error global no es None, el llamante debe recurrir al
+    metodo de uno en uno.
+    """
+    exe = find_calibre_debug()
+    if not exe:
+        return {}, 'no encuentro calibre-debug'
+    script = os.path.join(workdir, '_add_formats.py')
+    payload = os.path.join(workdir, '_add_payload.json')
+    try:
+        with codecs.open(script, 'w', 'utf-8') as fh:
+            fh.write(_ADDER_SCRIPT)
+        with codecs.open(payload, 'w', 'utf-8') as fh:
+            json.dump({'library': library_path,
+                       'items': [[int(i), pth] for i, pth in items]}, fh)
+    except Exception as exc:
+        return {}, 'no pude preparar el script: {}'.format(exc)
+
+    cmd = [exe, '-e', script, '--', payload]
+    kwargs = {}
+    if sys.platform == 'win32':
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=max(300, 10 * len(items)), **kwargs)
+    except Exception as exc:
+        return {}, '{}: {}'.format(type(exc).__name__, exc)
+
+    out = (proc.stdout or b'').decode('utf-8', 'replace')
+    marker = 'DEDUPE_RESULT '
+    if marker not in out:
+        err = (proc.stderr or b'').decode('utf-8', 'replace').strip()
+        return {}, (err[-300:] or 'calibre-debug no devolvio resultados '
+                                  '(codigo {})'.format(proc.returncode))
+    try:
+        pairs = json.loads(out.split(marker, 1)[1].strip())
+    except Exception as exc:
+        return {}, 'respuesta ilegible: {}'.format(exc)
+    return {int(bid): err for bid, err in pairs}, None
+
+
+def add_epub_format(library_path, book_id, epub_path):
+    """Anade el EPUB al registro con calibredb add_format.  Es ADITIVO."""
+    exe = find_calibredb()
+    if not exe:
+        return 'no encuentro calibredb'
+    cmd = [exe, '--with-library', library_path, 'add_format',
+           str(book_id), epub_path]
+    kwargs = {}
+    if sys.platform == 'win32':
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+    if proc.returncode != 0:
+        msg = (proc.stderr or b'').decode('utf-8', 'replace').strip()
+        if 'another calibre' in msg.lower() or 'is running' in msg.lower():
+            msg += ' -> cierra Calibre por completo y repite el comando.'
+        return msg or 'calibredb add_format devolvio {}'.format(proc.returncode)
+    return None
+
+
+def run_convert_azw3(libraries, args):
+    """
+    Convierte a EPUB los registros que solo tienen AZW3 y anade el resultado al
+    mismo registro, conservando el AZW3.
+
+    Trabaja por LOTES: convierte varios en paralelo (ebook-convert son procesos
+    externos, escalan con los nucleos) y luego anade los formatos en serie.  Por
+    lotes y no todo de golpe para no acumular cientos de EPUB temporales en
+    disco, y para que una interrupcion conserve lo ya hecho.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    if calibre_maybe_running() and not args.force_running:
+        print('\nParece que Calibre esta ABIERTO. No toco nada.')
+        print('calibredb necesita escribir en la biblioteca: cierra Calibre y')
+        print('repite el comando (o usa --force-running si estas segura).')
+        return 1
+
+    only_ids = None
+    if args.ids:
+        try:
+            only_ids = {int(x) for x in re.split(r'[,\s]+', args.ids) if x.strip()}
+        except ValueError:
+            raise SystemExit('--ids espera numeros separados por comas: --ids 1,2,3')
+
+    books, backend = load_all_books(libraries, None if args.backend == 'auto'
+                                    else args.backend)
+    targets = azw3_only_books(books, only_ids)
+
+    fmt_counts = defaultdict(int)
+    for b in books:
+        fmts = {f.upper() for f in (b.get('formats') or ())}
+        if 'AZW3' in fmts:
+            fmt_counts['con EPUB' if 'EPUB' in fmts else 'solo AZW3'] += 1
+    print('\nRegistros con AZW3: {} solo AZW3, {} que ya tienen EPUB '
+          '(estos no se tocan).'.format(fmt_counts['solo AZW3'],
+                                        fmt_counts['con EPUB']))
+    if not targets:
+        print('Nada que convertir.')
+        return 0
+
+    print('A convertir: {} registros.'.format(len(targets)))
+    print('Se anadira un EPUB a cada uno y se CONSERVARA el AZW3.')
+    if not args.yes:
+        try:
+            if input('Escribe CONVERTIR para continuar: ').strip() != 'CONVERTIR':
+                print('Cancelado: no se ha tocado nada.')
+                return 0
+        except EOFError:
+            print('Cancelado.')
+            return 0
+
+    # Respaldo de metadata.db, una vez por biblioteca y antes de escribir.
+    backups = {}
+    if not args.no_backup:
+        for lib in sorted({b['library'] for b in targets}):
+            bk = backup_metadata_db(lib)
+            backups[lib] = bk
+            print('  copia de seguridad: {}'.format(bk or 'FALLIDA'))
+
+    jobs = args.jobs or max(1, (os.cpu_count() or 2))
+    batch = max(1, min(args.batch, len(targets)))
+    done, failures, timings = [], [], []
+    started = time.time()
+
+    # TUBERIA CONTINUA, no por lotes.  Con lotes, mientras se anadian los
+    # formatos en serie no se convertia nada: con 20 trabajadores eso deja la CPU
+    # parada en cada tanda.  Aqui la reserva se mantiene alimentada y cada EPUB
+    # se anade en cuanto esta listo, borrando su temporal al momento (asi el
+    # disco no acumula mas de unos pocos ficheros a la vez).
+    #
+    # El directorio temporal se gestiona a mano y se borra con ignore_errors: al
+    # interrumpir puede quedar algun fichero en uso, y en Windows eso hace
+    # fallar el borrado.
+    from concurrent.futures import FIRST_COMPLETED, wait as futures_wait
+
+    interrupted = False
+    tmpdir = tempfile.mkdtemp(prefix='dedupe_conv_')
+    ex = ThreadPoolExecutor(max_workers=jobs)
+    pending = {}
+    remaining = iter(targets)
+    processed = 0
+    converted = [0]      # conversiones TERMINADAS (aunque aun no anadidas)
+    to_add = defaultdict(list)
+    add_seconds = [0.0]
+    bulk_ok = [True]
+
+    def _flush_adds(lib):
+        """
+        Anade a la biblioteca los EPUB acumulados.
+
+        Primero intenta la via masiva (una sola invocacion de Calibre para todos)
+        y, si no esta disponible o falla, cae al metodo de uno en uno con
+        calibredb.  Devuelve cuantos se han procesado.
+        """
+        items = to_add.pop(lib, [])
+        if not items:
+            return 0
+        t0 = time.time()
+        pairs = [(b['id'], path) for b, path in items]
+        errors, global_err = ({}, 'desactivado')
+        if bulk_ok[0]:
+            errors, global_err = add_epub_formats_bulk(lib, pairs, tmpdir)
+            if global_err:
+                bulk_ok[0] = False
+                sys.stderr.write('\n')
+                print('  (via rapida no disponible: {}; sigo de uno en uno, '
+                      'sera mas lento)'.format(global_err))
+        for b, path in items:
+            if global_err:
+                err = add_epub_format(b['library'], b['id'], path)
+            else:
+                err = errors.get(b['id'], 'sin respuesta para este id')
+            if err:
+                failures.append((b, 'convertido pero no anadido: {}'.format(err)))
+            else:
+                done.append(b)
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        add_seconds[0] += time.time() - t0
+        return len(items)
+
+    def _submit_next():
+        b = next(remaining, None)
+        if b is None:
+            return False
+        out = os.path.join(tmpdir, 'conv_{}_{}.epub'.format(b['lib_index'], b['id']))
+        fut = ex.submit(_convert_one,
+                        (b['uid'], b['format_paths']['AZW3'], out,
+                         args.convert_timeout))
+        pending[fut] = b
+        return True
+
+    try:
+        # Cola con algo de holgura sobre el numero de trabajadores, para que
+        # ninguno se quede esperando mientras el hilo principal anade formatos.
+        # No hace falta encolar mas: la ventana se realimenta sola.
+        for _ in range(jobs + 2):
+            if not _submit_next():
+                break
+        print('  (los EPUB se anaden a la biblioteca en bloques de {}, '
+              'para no arrancar Calibre una vez por libro)'.format(batch))
+
+        while pending:
+            ready, _ = futures_wait(list(pending), return_when=FIRST_COMPLETED)
+            for fut in ready:
+                b = pending.pop(fut)
+                try:
+                    uid, epub, err, elapsed, src_size = fut.result()
+                except Exception as exc:
+                    failures.append((b, '{}: {}'.format(type(exc).__name__, exc)))
+                    processed += 1
+                    _submit_next()
+                    continue
+                timings.append((elapsed, src_size, uid))
+
+                if err == 'cancelado':
+                    processed += 1
+                elif err:
+                    failures.append((b, err))
+                    processed += 1
+                else:
+                    converted[0] += 1
+                    # No se anade de uno en uno: se acumula y se anade por
+                    # tandas con una sola llamada a Calibre.  Es lo que evita
+                    # pagar ~2 s de arranque por libro.
+                    to_add[b['library']].append((b, epub))
+
+                _submit_next()
+
+            # Vaciar las tandas que ya han alcanzado el tamano de lote.
+            for lib in [l for l, v in to_add.items() if len(v) >= batch]:
+                processed += _flush_adds(lib)
+
+            el = time.time() - started
+            # El ritmo se mide con las conversiones TERMINADAS, no con las ya
+            # anadidas: si no, el contador se queda en 0 hasta el primer bloque
+            # de anadido y parece que el programa esta colgado.
+            hechas = converted[0] + len(failures)
+            rate = hechas / el if el else 0
+            sys.stderr.write('\r  convertidos {}/{} (anadidos {})  ({:.2f}/s, '
+                             'faltan ~{:.0f} min, fallos {})   '.format(
+                                 hechas, len(targets), len(done), rate,
+                                 ((len(targets) - hechas) / rate / 60.0) if rate else 0,
+                                 len(failures)))
+            sys.stderr.flush()
+
+        # Ultima tanda, la que no llego al tamano de lote.
+        for lib in list(to_add):
+            processed += _flush_adds(lib)
+        sys.stderr.write('\n')
+    except KeyboardInterrupt:
+        interrupted = True
+        sys.stderr.write('\n')
+        print('Interrumpido: corto las conversiones en marcha y conservo lo anadido.')
+        for fut in list(pending):
+            fut.cancel()
+        _terminate_running_converts()
+        ex.shutdown(wait=False)
+        # Conservar lo ya convertido pero aun no anadido: son minutos de trabajo
+        # que no hay motivo para tirar.  Los ficheros temporales existen todavia,
+        # porque el borrado del directorio se hace despues, en el finally.
+        pendientes_de_anadir = sum(len(v) for v in to_add.values())
+        if pendientes_de_anadir:
+            print('  anadiendo {} conversiones ya terminadas antes de salir...'
+                  .format(pendientes_de_anadir))
+            for lib in list(to_add):
+                try:
+                    processed += _flush_adds(lib)
+                except Exception as exc:
+                    print('  no pude anadirlas: {}'.format(exc))
+    finally:
+        if not interrupted:
+            ex.shutdown(wait=True)
+        # ignore_errors: en Windows un fichero aun en uso impediria el borrado y
+        # reventaria justo al final, despues de una hora de trabajo bueno.
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    print('\nConvertidos y anadidos: {} | fallos: {}'.format(len(done), len(failures)))
+
+    # Reparto de tiempos. La pregunta util no es "cuanto tarda" sino "cuanto
+    # tarda PARA SU TAMANO": un AZW3 de 30 MB con cientos de imagenes tarda
+    # minutos y es normal, mientras que uno pequeno que tarda lo mismo es
+    # sospechoso.  De ahi la columna s/MB y la marca de los que se salen de
+    # escala frente a la mediana.
+    if timings:
+        import statistics
+        ts = [t for t, _s, _u in timings if t > 0]
+        if ts:
+            print('Tiempo por libro: mediana {:.1f}s, media {:.1f}s, maximo {:.1f}s'
+                  .format(statistics.median(ts), sum(ts) / len(ts), max(ts)))
+        total_el = time.time() - started
+        print('Reparto: {:.0f}s en total, de los cuales {:.0f}s anadiendo a la '
+              'biblioteca ({:.0f} %).'.format(
+                  total_el, add_seconds[0],
+                  100.0 * add_seconds[0] / total_el if total_el else 0))
+        ratios = [(t / (size / (1024.0 * 1024.0)), t, size, uid)
+                  for t, size, uid in timings
+                  if t > 0 and size and size > 64 * 1024]
+        med_ratio = statistics.median([r for r, _t, _s, _u in ratios]) if ratios else 0
+        uid_to_book = {b['uid']: b for b in targets}
+        if len(timings) >= 3:
+            print('\nLos mas lentos:')
+            print('  {:>8} {:>10} {:>8}  libro'.format('tiempo', 'tamano', 's/MB'))
+            for t, size, uid in sorted(timings, reverse=True)[:6]:
+                b = uid_to_book.get(uid)
+                mb = (size or 0) / (1024.0 * 1024.0)
+                ratio = (t / mb) if mb > 0.0625 else None
+                marca = ''
+                if ratio and med_ratio and ratio > 3 * med_ratio:
+                    marca = '  <-- lento para su tamano, revisalo'
+                print('  {:7.1f}s {:>10} {:>8}  id={} {!r}{}'.format(
+                    t, human_size(size),
+                    _fmt_ratio(ratio),
+                    b['id'] if b else '?',
+                    ((b['title'] if b else '') or '')[:38], marca))
+            if med_ratio:
+                print('  Mediana: {} s/MB. Los que se acercan a esa cifra solo son '
+                      'grandes;'.format(_fmt_ratio(med_ratio)))
+                print('  los muy por encima suelen tener el fichero danado.')
+
+    out_dir = args.out_dir or _DEFAULT_OUT_DIR
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except Exception:
+        out_dir = os.getcwd()
+    log = os.path.join(out_dir, 'conversion_azw3_{}.txt'.format(
+        time.strftime('%Y%m%d_%H%M%S')))
+    try:
+        with codecs.open(log, 'w', 'utf-8') as fh:
+            fh.write('Conversion AZW3 -> EPUB, {}\n'.format(
+                time.strftime('%Y-%m-%d %H:%M:%S')))
+            fh.write('Convertidos: {} | fallos: {}\n\n'.format(len(done), len(failures)))
+            by_lib = defaultdict(list)
+            for b in done:
+                by_lib[b['library']].append(b['id'])
+            for lib, ids in sorted(by_lib.items()):
+                fh.write('{}\n  id:{}\n\n'.format(lib, ','.join(str(i) for i in sorted(ids))))
+            if failures:
+                fh.write('FALLOS\n')
+                for b, err in failures:
+                    fh.write('  [{}] id={} {!r}\n    {}\n'.format(
+                        os.path.basename(b['library'].rstrip('/\\')),
+                        b['id'], (b['title'] or '')[:60], err))
+        print('Detalle: {}'.format(log))
+    except Exception as exc:
+        print('AVISO: no pude escribir el log: {}'.format(exc))
+
+    if done:
+        by_lib = defaultdict(list)
+        for b in done:
+            by_lib[b['library']].append(b['id'])
+        print('\nPara revisarlos en Calibre (una linea por biblioteca):')
+        for lib, ids in sorted(by_lib.items()):
+            print('  {}'.format(lib))
+            print('    id:{}'.format(','.join(str(i) for i in sorted(ids))))
+    if failures:
+        print('\nPrimeros fallos (el resto, en el log):')
+        for b, err in failures[:10]:
+            print('  id={} {!r}: {}'.format(b['id'], (b['title'] or '')[:45], err))
+        print('\nLos AZW3 con DRM no se pueden convertir: son los fallos habituales.')
+    if interrupted:
+        pendientes = len(targets) - len(done) - len(failures)
+        print('\nQuedaban ~{} registros por convertir.'.format(max(0, pendientes)))
+        print('Repite el MISMO comando para continuar: los {} ya convertidos tienen'
+              .format(len(done)))
+        print('EPUB y quedan fuera del alcance, asi que no se repiten.')
+        return 130
+
+    print('\nAhora rescanea para aprovecharlo: los registros convertidos se leeran')
+    print('como EPUB, mucho mas rapido, y compararan mejor.')
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1623,6 +2498,23 @@ Otras formas de indicar las bibliotecas:
     g.add_argument('--no-open', action='store_true',
                    help='No abrir el informe en el navegador al terminar.')
 
+    g = p.add_argument_group('conversion de AZW3 (modo aparte, ESCRIBE en la biblioteca)')
+    g.add_argument('--convert-azw3', action='store_true',
+                   help='Convertir a EPUB los registros que solo tienen AZW3 y '
+                        'anadir el EPUB al mismo registro, conservando el AZW3. '
+                        'Requiere Calibre CERRADO. No escanea: hazlo despues.')
+    g.add_argument('--ids', metavar='1,2,3',
+                   help='Limitar la conversion a estos ids (para probar en pequeno).')
+    g.add_argument('--convert-timeout', type=int, default=900, metavar='SEG',
+                   help='Cortar una conversion que pase de estos segundos '
+                        '(por defecto 900). Vale tambien para los AZW3 que se '
+                        'convierten al vuelo durante el escaneo.')
+    g.add_argument('--batch', type=int, default=100, metavar='N',
+                   help='Cuantos EPUB se acumulan antes de anadirlos a la '
+                        'biblioteca de una sola vez (por defecto 100). Mas alto '
+                        'amortiza mejor el arranque de Calibre, pero mantiene mas '
+                        'ficheros temporales en disco.')
+
     g = p.add_argument_group('borrado')
     g.add_argument('--apply', metavar='PLAN.JSON',
                    help='Ejecutar un plan de borrado ya generado. No vuelve a escanear.')
@@ -1634,8 +2526,9 @@ Otras formas de indicar las bibliotecas:
     g.add_argument('--yes', action='store_true', help='No pedir confirmacion.')
     g.add_argument('--no-export', action='store_true',
                    help='NO exportar una copia de los libros antes de borrarlos. '
-                        'Por defecto se exporta: es la unica copia que no caduca, '
-                        'porque las papeleras se purgan.')
+                        'Desaconsejado: la copia exportada es la UNICA que '
+                        'recupera los ficheros. La papelera de Calibre puede '
+                        'quedar vacia tras un borrado por linea de comandos.')
     g.add_argument('--export-dir', metavar='CARPETA',
                    help='Donde exportar la copia previa (por defecto: '
                         'dedupe_out/exportadas_<fecha>).')
@@ -1647,6 +2540,10 @@ Otras formas de indicar las bibliotecas:
                    help='Aceptar entradas cuyo fichero cambio de fecha pero no de '
                         'tamano ni de ruta.')
 
+    p.add_argument('--inspect', metavar='FICHERO',
+                   help='Diagnosticar UN libro: que capitulos se le extraen y '
+                        'por que se descarta lo demas. Util para los que salen '
+                        'como "sin contenido comparable".')
     p.add_argument('--cache-info', action='store_true',
                    help='Decir donde esta la cache y si es valida, sin escanear.')
     p.add_argument('--doctor', action='store_true',
@@ -1661,6 +2558,10 @@ def main(argv=None):
                         format='%(levelname)s %(name)s: %(message)s')
 
     # --- Fase 2 aislada: aplicar un plan ya calculado ---
+    if args.inspect:
+        check_lxml()
+        return inspect_book(args.inspect)
+
     if args.doctor:
         doctor()
         return 0
@@ -1671,6 +2572,24 @@ def main(argv=None):
         print('Firma actual del motor: {}'.format(engine_signature()))
         load_cache(cache_path)
         return 0
+
+    # El tope vale para las dos vias: la conversion al vuelo del escaneo y la
+    # de --convert-azw3.  Sin el, un AZW3 defectuoso cuelga un escaneo de horas.
+    try:
+        import extractor as _ex
+        _ex.CONVERT_TIMEOUT = args.convert_timeout
+    except Exception:
+        pass
+
+    if args.convert_azw3:
+        check_lxml()
+        libraries = resolve_libraries(args.library, args.root)
+        if not libraries:
+            raise SystemExit('Indica que bibliotecas: --root "..." o --library "..."')
+        print('Bibliotecas: {}'.format(len(libraries)))
+        for lib in libraries:
+            print('  - {}'.format(lib))
+        return run_convert_azw3(libraries, args)
 
     if args.apply:
         if not getattr(args, 'out_dir', None):
@@ -1790,6 +2709,11 @@ def main(argv=None):
             print('  verificados {}; retirados del borrado por no coincidir: {}'.format(
                 n_checked, n_moved))
 
+    problem_books = books_with_issues(books, fps)
+    if problem_books:
+        print('Con problemas de formato (conviene reconvertirlos): {}'.format(
+            len(problem_books)))
+
     n_drop = sum(len(g['drop']) for g in groups)
     n_blocked = sum(len(g['blocked']) for g in groups)
     n_cross = sum(1 for g in groups if g['cross'])
@@ -1820,6 +2744,7 @@ def main(argv=None):
         'n_drop': n_drop, 'n_cross': n_cross, 'reclaimable': reclaimable,
         'elapsed': time.time() - started, 'deleted': deleted > 0,
         'plan': plan_path, 'keep_strategy': args.keep,
+        'problem_books': problem_books,
         'prefer_libraries': list(args.prefer_library or ()),
     }
     report = args.report or os.path.join(out_dir, 'duplicados_{}.html'.format(stamp))

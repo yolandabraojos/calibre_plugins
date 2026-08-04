@@ -28,6 +28,28 @@ _HTML_EXTENSIONS = ('.html', '.xhtml', '.htm')
 # Media-types OPF que indican contenido HTML/XHTML (cubre .xml en algunos EPUBs)
 _HTML_MEDIA_TYPES = {'application/xhtml+xml', 'text/html'}
 
+# Extensiones que NUNCA contienen capitulos: evitan leer imagenes y fuentes
+# enteras en la deteccion por contenido.
+# Problemas de formato que hacen recomendable reconvertir el libro con Calibre.
+# Se detectan durante la extraccion, sin releer nada: son observaciones de lo que
+# ya ha habido que mirar para sacar los capitulos.
+ISSUE_LABELS = {
+    'zip_danado':        'el ZIP esta danado (hubo que rescatarlo con ebook-convert)',
+    'sin_opf':           'no tiene OPF',
+    'opf_ilegible':      'el OPF no se puede interpretar',
+    'fuera_del_manifest': 'tiene capitulos que el OPF no declara',
+    'sin_spine':         'el OPF no define el orden de lectura (spine)',
+    'rescatado_por_contenido': 'sus capitulos no se reconocian ni por nombre ni por OPF',
+    'muy_troceado':      'esta partido en muchos fragmentos por una conversion',
+    'sin_texto':         'no se le ha podido extraer ningun texto',
+}
+
+_BINARY_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.tif', '.tiff',
+    '.otf', '.ttf', '.woff', '.woff2', '.eot',
+    '.css', '.js', '.ncx', '.opf', '.xpgt', '.mp3', '.mp4', '.m4a', '.pdf',
+}
+
 
 # ---------------------------------------------------------------------------
 # Detección binaria (sin parsear el EPUB)
@@ -137,6 +159,25 @@ def _is_jacket_by_name(name):
     return basename.startswith('jacket')
 
 
+def _unquote_href(href):
+    """
+    Desescapa un href del OPF.
+
+    Los href van percent-encoded (RFC 3986): un fichero llamado
+    'cap 01.html' aparece como 'cap%2001.html'.  Sin desescapar, el nombre no
+    coincide con el del ZIP, el item se descarta y el libro puede acabar con
+    CERO capitulos aunque tenga texto.
+    """
+    try:
+        from urllib.parse import unquote           # Python 3
+    except ImportError:                            # pragma: no cover
+        from urllib import unquote                 # Python 2
+    try:
+        return unquote(href)
+    except Exception:
+        return href
+
+
 def _get_manifest_html_items(zf, all_names):
     """
     Parsea el OPF y devuelve el conjunto de rutas ZIP que corresponden a
@@ -168,6 +209,7 @@ def _get_manifest_html_items(zf, all_names):
             href = (item.get('href') or '').split('#')[0]
             if not href:
                 continue
+            href = _unquote_href(href)
             candidate = posixpath.normpath(base + href).lstrip('./')
             if candidate in zip_set:
                 html_items.add(candidate)
@@ -203,7 +245,7 @@ def _is_jacket_by_content(raw_bytes):
     return False
 
 
-def extract_epub_chapters(epub_path):
+def extract_epub_chapters(epub_path, issues=None):
     """
     Devuelve una tupla ({nombre_archivo: texto_limpio}, [ignored_files]).
 
@@ -228,6 +270,11 @@ def extract_epub_chapters(epub_path):
     logger.debug('Extracting EPUB chapters from %s', epub_path)
     chapters = {}
     ignored  = []
+    # 'issues' es un parametro de SALIDA opcional: quien lo pase recibe las
+    # senales de mala formacion del EPUB.  Se hace asi, y no cambiando el valor
+    # devuelto, para no romper a quien ya llama a esta funcion (el plugin).
+    if issues is None:
+        issues = []
 
     with zipfile.ZipFile(epub_path, 'r') as zf:
         all_names = zf.namelist()
@@ -237,6 +284,14 @@ def extract_epub_chapters(epub_path):
         # application/xhtml+xml (frecuente en algunos EPUBs generados por
         # herramientas propietarias).
         manifest_html = _get_manifest_html_items(zf, all_names)
+        opf_name = next((n for n in all_names if n.lower().endswith('.opf')), None)
+        if not opf_name:
+            issues.append('sin_opf')
+        else:
+            try:
+                etree.fromstring(zf.read(opf_name))
+            except Exception:
+                issues.append('opf_ilegible')
 
         def _is_html_candidate(name):
             return _is_html_file(name) or name in manifest_html
@@ -249,11 +304,44 @@ def extract_epub_chapters(epub_path):
         # -- Paso 2: candidatos reales (HTML no-sistema) --
         html_candidates = {n for n in all_names if _is_html_candidate(n) and not _is_system_file(n)}
 
+        # -- Paso 2b: red de seguridad por CONTENIDO --
+        # Si ni la extension ni el manifest han identificado nada, el libro se
+        # daria por vacio ("0 capitulos") aunque tenga texto.  Pasa con EPUBs
+        # cuyos ficheros no acaban en .html (p. ej. '...html_split_000') y cuyo
+        # OPF no se ha podido interpretar.  Antes de rendirse, se mira si el
+        # contenido empieza como un documento HTML.
+        if not html_candidates:
+            for name in all_names:
+                if name.endswith('/') or _is_system_file(name):
+                    continue
+                if os.path.splitext(name)[1].lower() in _BINARY_EXTENSIONS:
+                    continue
+                try:
+                    head = zf.read(name)[:512].lstrip().lower()
+                except Exception:
+                    continue
+                if head.startswith((b'<!doctype html', b'<html', b'<?xml')) and b'<body' in head or \
+                   head.startswith((b'<!doctype html', b'<html')):
+                    html_candidates.add(name)
+            if html_candidates:
+                issues.append('rescatado_por_contenido')
+                logger.debug('%s: %d ficheros recuperados por contenido',
+                             epub_path, len(html_candidates))
+
         # -- Paso 3: orden canónico (spine OPF) + huérfanos al final --
         spine_ordered = [n for n in _get_spine_order(zf, all_names) if n in html_candidates]
         spine_set     = set(spine_ordered)
         extra_names   = sorted(n for n in html_candidates if n not in spine_set)
         ordered_names = spine_ordered + extra_names
+
+        if html_candidates and not spine_ordered:
+            issues.append('sin_spine')
+        no_declarados = [n for n in html_candidates if n not in manifest_html
+                         and not _is_html_file(n)]
+        if no_declarados:
+            issues.append('fuera_del_manifest')
+        if sum(1 for n in html_candidates if '_split_' in n.lower()) >= 20:
+            issues.append('muy_troceado')
 
         if extra_names:
             logger.debug('%s: %d archivos fuera del spine añadidos: %s',
@@ -286,6 +374,8 @@ def extract_epub_chapters(epub_path):
                 # Solo ignoramos si no hay absolutamente ningún texto extraíble
                 ignored.append({'name': name, 'reason': 'vacío'})
 
+    if not chapters:
+        issues.append('sin_texto')
     return chapters, ignored
 
 
@@ -397,14 +487,28 @@ def origin_rank(origin):
     return ORIGIN_RANK.get(origin, ORIGIN_RANK[ORIGIN_UNKNOWN])
 
 
-def extract_book_chapters(book_path):
+def extract_book_chapters(book_path, issues=None):
     """
     Devuelve (chapters, ignored_files).
-    Ambas funciones internas devuelven la misma tupla.
+
+    'issues' es una lista opcional donde se anotan los problemas de formato
+    detectados (claves de ISSUE_LABELS), para poder sugerir que libros conviene
+    reconvertir.
     """
+    if issues is None:
+        issues = []
     ext = os.path.splitext(book_path)[1].lower()
     if ext == '.epub':
-        return extract_epub_chapters(book_path)
+        try:
+            return extract_epub_chapters(book_path, issues=issues)
+        except zipfile.BadZipFile:
+            # zipfile no ha encontrado el indice central (fichero truncado o
+            # con el indice danado).  Calibre suele poder abrirlo igualmente,
+            # asi que se intenta el rescate por conversion antes de rendirse.
+            logger.warning('%s: zipfile lo rechaza; intento rescatarlo con '
+                           'ebook-convert', book_path)
+            issues.append('zip_danado')
+            return _convert_and_extract(book_path)
     if ext == '.azw3':
         return extract_azw3_chapters(book_path)
     raise ValueError('Formato no soportado: {}'.format(ext))
@@ -435,40 +539,74 @@ def _find_ebook_convert():
         'Calibre al PATH para poder analizar ficheros AZW3.')
 
 
-def extract_azw3_chapters(azw3_path):
+# Tope de tiempo para ebook-convert, en segundos.  Un AZW3 con muchas imagenes
+# tarda minutos legitimamente, pero uno defectuoso puede no terminar nunca y
+# dejaria colgado un escaneo de horas.  dedupe_cli.py lo ajusta con
+# --convert-timeout.
+CONVERT_TIMEOUT = 900
+
+
+def _convert_and_extract(book_path):
+    """
+    Convierte un libro a EPUB con ebook-convert y extrae los capitulos del
+    resultado.
+
+    Se usa para los AZW3 (que hay que convertir siempre) y como RESCATE de los
+    EPUB que la libreria zipfile de Python rechaza.  Calibre trae su propio
+    lector de ZIP, mas tolerante: abre ficheros con el indice central danado que
+    zipfile da por invalidos.  Si Calibre puede abrirlo, se aprovecha.
+
+    Aviso: el EPUB reconstruido por Calibre puede trocear los capitulos de otra
+    forma, asi que su huella no tiene por que coincidir con la de una copia sana
+    del mismo libro.  Se puede perder una coincidencia, pero nunca se inventa
+    una: dos libros distintos siguen dando huellas distintas.
+    """
     converter = _find_ebook_convert()
     with tempfile.TemporaryDirectory() as tmpdir:
         epub_path = os.path.join(tmpdir, 'temp_conv.epub')
         creationflags = 0
         if sys.platform == 'win32':
             creationflags = subprocess.CREATE_NO_WINDOW
-        proc = subprocess.run(
-            [
-                converter, azw3_path, epub_path,
-                # Evita que Calibre trocee los HTML grandes en fragmentos
-                # 'partNNNN_split_00M.html' que no existen en el AZW3 original
-                # y que inflaban los "únicos en B" al comparar (1 capítulo de A
-                # frente a varios fragmentos de B).
-                '--flow-size', '0',            # sin partición por tamaño
-                '--dont-split-on-page-breaks', # sin partición por saltos de página
-            ],
-            # OJO: capture_output SIN text=True, a propósito.
-            #
-            # ebook-convert imprime el título del libro en su salida, y con
-            # text=True Python la decodifica con la codificación local de la
-            # consola (cp1252 en Windows). Un título con caracteres fuera de
-            # cp1252 hacía saltar UnicodeDecodeError dentro del hilo lector de
-            # subprocess, y ese libro quedaba fuera del análisis. Se captura en
-            # bytes y se decodifica aquí, con errors='replace', solo si hay que
-            # construir un mensaje de error.
-            capture_output=True, creationflags=creationflags,
-        )
+        try:
+            proc = subprocess.run(
+                [
+                    converter, book_path, epub_path,
+                    # Evita que Calibre trocee los HTML grandes en fragmentos
+                    # 'partNNNN_split_00M.html' que no existen en el AZW3
+                    # original y que inflaban los "únicos en B" al comparar
+                    # (1 capítulo de A frente a varios fragmentos de B).
+                    '--flow-size', '0',
+                    '--dont-split-on-page-breaks',
+                ],
+                # OJO: capture_output SIN text=True, a propósito.
+                #
+                # ebook-convert imprime el título del libro en su salida, y con
+                # text=True Python la decodifica con la codificación local de la
+                # consola (cp1252 en Windows). Un título con caracteres fuera de
+                # cp1252 hacía saltar UnicodeDecodeError dentro del hilo lector de
+                # subprocess, y ese libro quedaba fuera del análisis. Se captura en
+                # bytes y se decodifica aquí, con errors='replace', solo si hay que
+                # construir un mensaje de error.
+                capture_output=True, creationflags=creationflags,
+                timeout=CONVERT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                'ebook-convert paso de {} s con {!r} y se ha cortado. Suele ser '
+                'un libro enorme o con muchisimas imagenes; si se repite, el '
+                'fichero puede estar defectuoso.'.format(
+                    CONVERT_TIMEOUT, os.path.basename(book_path)))
         if proc.returncode != 0:
             err = (proc.stderr or b'').decode('utf-8', 'replace').strip()
-            raise RuntimeError('Error convirtiendo AZW3 {!r}: {}'.format(
-                os.path.basename(azw3_path),
+            raise RuntimeError('Error convirtiendo {!r}: {}'.format(
+                os.path.basename(book_path),
                 err[-400:] or 'ebook-convert devolvió {}'.format(proc.returncode)))
         return extract_epub_chapters(epub_path)
+
+
+def extract_azw3_chapters(azw3_path):
+    """Extrae los capitulos de un AZW3 convirtiendolo antes a EPUB."""
+    return _convert_and_extract(azw3_path)
 
 
 def _get_spine_order(zf, all_names):
@@ -514,7 +652,7 @@ def _get_spine_order(zf, all_names):
             href = manifest.get(itemref.get('idref'), '')
             if not href:
                 continue
-            href = href.split('#')[0]
+            href = _unquote_href(href.split('#')[0])
             if not href:
                 continue
             candidate = posixpath.normpath(base + href)
