@@ -38,6 +38,15 @@ Flujo en DOS FASES, para no repetir la parte lenta:
 - El borrado lo ejecuta Calibre (`calibredb remove`, sin `--permanent`, o
   `api.remove_books` bajo `calibre-debug`), respalda `metadata.db` de cada
   biblioteca antes y aborta si detecta Calibre abierto (`--force-running` lo salta).
+- **Antes de borrar exporta una copia** con `calibredb export` a
+  `dedupe_out/exportadas_<fecha>/` (ficheros + portada + OPF). Si la exportacion
+  falla, NO se borra nada de esa biblioteca. `--no-export` lo desactiva.
+  Es la unica copia que no caduca: sin `--permanent` los ficheros van a la
+  papelera de Windows y a la de la biblioteca (`.caltrash`), pero **esta se purga
+  a los pocos dias** y un disco de red puede no tener papelera. Ademas
+  `calibredb remove` borra la FILA de `metadata.db`, asi que recuperar solo el
+  fichero no devuelve el libro a Calibre: hace falta la copia de `metadata.db`,
+  o "Restaurar libros borrados recientemente" en la interfaz.
 - `--apply` **valida el plan** antes de borrar: si un libro cambio de id, titulo,
   ruta, tamano o mtime desde el escaneo, esa entrada se rechaza. Calibre reutiliza
   los ids liberados, asi que sin esto un plan viejo podria borrar otro libro.
@@ -46,7 +55,15 @@ Flujo en DOS FASES, para no repetir la parte lenta:
   `id:...` por biblioteca.
 - `--prefer-library` fuerza en que biblioteca se conserva la copia; `--skip-cross`
   informa de los duplicados entre bibliotecas sin borrarlos.
-- No borra una copia con formatos ausentes en la conservada (p. ej. un PDF extra).
+- De cada registro solo se COMPARA un fichero (EPUB si lo hay, si no AZW3), pero
+  antes de borrar se verifican los formatos SECUNDARIOS de los candidatos: si el
+  AZW3 de un registro tiene otra huella que el grupo, ese registro no se borra
+  (podria ser otro libro colado bajo el mismo id). Solo se verifican los
+  candidatos a borrar, no toda la biblioteca. `--no-verify-formats` lo salta.
+- No borra una copia con formatos NO COMPARADOS ausentes en la conservada
+  (p. ej. un PDF o un MOBI extra). EPUB y AZW3 **no** protegen: son los que se
+  comparan y el criterio ya decide entre ellos, asi que proteger un AZW3 "por
+  ser el unico AZW3" impediria borrarlo nunca.
 
 ### Criterio de que copia se conserva (UNICO, compartido)
 

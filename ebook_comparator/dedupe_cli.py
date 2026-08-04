@@ -302,6 +302,7 @@ def load_books_calibre_api(library_path):
         except Exception:
             fmts = set()
         chosen_fmt, chosen_path = None, None
+        format_paths = {}
         for fmt in SUPPORTED_FORMATS:
             if fmt in fmts:
                 try:
@@ -309,8 +310,9 @@ def load_books_calibre_api(library_path):
                 except Exception:
                     p = None
                 if p and os.path.exists(p):
-                    chosen_fmt, chosen_path = fmt, p
-                    break
+                    format_paths[fmt] = p
+                    if chosen_fmt is None:
+                        chosen_fmt, chosen_path = fmt, p
         if not chosen_fmt:
             continue
         try:
@@ -331,6 +333,7 @@ def load_books_calibre_api(library_path):
             'format': chosen_fmt, 'path': chosen_path,
             'size': _safe_size(chosen_path), 'mtime': _safe_mtime(chosen_path),
             'formats': sorted(fmts), 'has_cover': has_cover,
+            'format_paths': format_paths,
         })
     try:
         lib.close()
@@ -378,6 +381,7 @@ def load_books_sqlite(library_path):
         title, bookpath, has_cover = e['meta']
         fmts = e['formats']
         chosen_fmt, chosen_path, chosen_size = None, None, 0
+        format_paths = {}
         for fmt in SUPPORTED_FORMATS:
             if fmt in fmts:
                 name, usize = fmts[fmt]
@@ -385,8 +389,9 @@ def load_books_sqlite(library_path):
                                  (bookpath or '').replace('/', os.sep),
                                  '{}.{}'.format(name, fmt.lower()))
                 if os.path.exists(p):
-                    chosen_fmt, chosen_path, chosen_size = fmt, p, usize
-                    break
+                    format_paths[fmt] = p
+                    if chosen_fmt is None:
+                        chosen_fmt, chosen_path, chosen_size = fmt, p, usize
         if not chosen_fmt:
             continue
         books.append({
@@ -396,6 +401,7 @@ def load_books_sqlite(library_path):
             'size': _safe_size(chosen_path) or (chosen_size or 0),
             'mtime': _safe_mtime(chosen_path),
             'formats': sorted(fmts.keys()), 'has_cover': bool(has_cover),
+            'format_paths': format_paths,
         })
     return books
 
@@ -468,19 +474,36 @@ def engine_signature():
 
 
 def load_cache(cache_path):
-    """Devuelve {ruta: registro} valido, o {} si no sirve."""
-    if not cache_path or not os.path.exists(cache_path):
+    """
+    Devuelve {ruta: registro} valido, o {} si no sirve.
+
+    Informa SIEMPRE de lo que pasa con la cache, por pantalla y no por el log:
+    "no la esta usando" es una queja habitual y sin este mensaje hay que
+    adivinar si el fichero no existia, estaba ilegible o era de otro motor.
+    """
+    if not cache_path:
+        print('Cache: desactivada (--no-cache).')
+        return {}
+    print('Cache: {}'.format(cache_path))
+    if not os.path.exists(cache_path):
+        print('  no existe todavia; se creara durante este escaneo.')
         return {}
     try:
         with codecs.open(cache_path, 'r', 'utf-8') as fh:
             data = json.load(fh)
     except Exception as exc:
-        logger.warning('Cache ilegible (%s): la ignoro.', exc)
+        print('  ILEGIBLE ({}): la ignoro y la reescribo.'.format(exc))
         return {}
+    books = data.get('books') or {}
     if data.get('engine') != engine_signature():
-        print('  (la cache es de otra version del motor de extraccion: la descarto)')
+        print('  es de otra version del motor de extraccion ({} entradas): la '
+              'descarto.'.format(len(books)))
+        print('  (paso al cambiar extractor.py o comparator.py: las huellas de '
+              'motores distintos no son comparables)')
         return {}
-    return data.get('books') or {}
+    print('  valida, guardada el {}, {} entradas.'.format(
+        data.get('saved', '?'), len(books)))
+    return books
 
 
 def save_cache(cache_path, entries):
@@ -497,7 +520,9 @@ def save_cache(cache_path, entries):
             os.remove(cache_path)
         os.rename(tmp, cache_path)
     except Exception as exc:
-        logger.warning('No se pudo guardar la cache: %s', exc)
+        # Un fallo aqui significa repetir horas de escaneo la proxima vez: se
+        # avisa por pantalla, no en el log, donde pasaria desapercibido.
+        print('AVISO: no se pudo guardar la cache en {}: {}'.format(cache_path, exc))
 
 
 def _cache_key(book):
@@ -722,12 +747,15 @@ def group_duplicates(books, fps, min_chapters=1):
         if len(members) < 2:
             continue
         members.sort(key=lambda b: (b['lib_index'], b['id']))
-        sha1s = {m['sha1'] for m in members if m['sha1']}
+        sha1s = {m['sha1'] for m in members}
         libs = {m['library'] for m in members}
         groups.append({
             'fingerprint': fp,
             'books': members,
-            'binary': len(sha1s) == 1,
+            # Estricto: TODOS deben tener sha1 y ser el mismo.  Con un None por
+            # medio el conjunto podia quedarse en un solo elemento y marcar como
+            # "identicos byte a byte" un grupo que no lo era.
+            'binary': None not in sha1s and len(sha1s) == 1,
             'cross': len(libs) > 1,
             'libraries': sorted(libs),
         })
@@ -749,54 +777,93 @@ def _origin_rank(origin):
 KEEP_STRATEGIES = ('plugin', 'best', 'largest', 'smallest', 'oldest', 'newest')
 
 
-def _keep_sort_key(strategy, prefer_rank):
+def _keep_criteria(strategy, prefer_rank):
     """
-    Clave de orden: el PRIMER libro tras ordenar es el que se conserva.
+    Lista ordenada de criterios: [(etiqueta, valor, formateador), ...].
 
-    'prefer_rank' mapea ruta de biblioteca -> prioridad (menor gana).  Cuando se
-    han indicado bibliotecas preferidas con --prefer-library, esa preferencia
-    manda sobre cualquier otro criterio: es lo que permite decir "la copia buena
-    vive siempre en mi biblioteca principal".
+    La clave de ordenacion Y la explicacion del informe salen de ESTA misma
+    lista, a proposito.  Antes la explicacion era un texto fijo que siempre
+    decia "el mayor de N" aunque el tamano no hubiera decidido nada, y llegaba a
+    afirmar que la copia conservada era la mayor cuando era la menor.  Con una
+    unica fuente, la explicacion no puede contradecir a la decision.
+
+    Menor gana en todos los valores.
     """
     def rank(b):
         return prefer_rank.get(os.path.realpath(b['library']), 10 ** 6)
 
-    if strategy == 'largest':
-        return lambda b: (rank(b), -b['size'], b['lib_index'], b['id'])
-    if strategy == 'smallest':
-        return lambda b: (rank(b), b['size'], b['lib_index'], b['id'])
-    if strategy == 'oldest':
-        return lambda b: (rank(b), b['lib_index'], b['id'])
-    if strategy == 'newest':
-        return lambda b: (rank(b), -b['lib_index'], -b['id'])
+    def libname(b):
+        return os.path.basename(b['library'].rstrip('/\\')) or b['library']
 
-    # 'plugin' (= 'best'): EL MISMO criterio que usa el plugin al marcar
-    # duplicados en Calibre, en este orden:
-    #   1. Biblioteca preferida (--prefer-library). Solo existe en el CLI.
-    #   2. EPUB antes que AZW3. Es la regla clara del plugin.
-    #   3. Edicion editorial antes que conversion casera de Calibre.
-    #   4. Fichero mas GRANDE. Es lo que hace el codigo del plugin (su docstring
-    #      y su red de seguridad decian lo contrario: se corrigio en ui.py).
-    #   5. Con portada antes que sin portada, y por ultimo id, para que el
-    #      resultado sea estable y reproducible entre ejecuciones.
-    return lambda b: (
-        rank(b),
-        0 if b['format'] == 'EPUB' else 1,
-        _origin_rank(b.get('origin')),
-        -b['size'],
-        0 if b.get('has_cover') else 1,
-        b['lib_index'],
-        b['id'],
-    )
+    pref   = ('biblioteca preferida', rank, libname)
+    fmt    = ('formato', lambda b: 0 if b['format'] == 'EPUB' else 1,
+              lambda b: b['format'])
+    origin = ('procedencia', lambda b: _origin_rank(b.get('origin')),
+              lambda b: b.get('origin') or 'desconocido')
+    bigger = ('tamano', lambda b: -(b['size'] or 0),
+              lambda b: human_size(b['size']))
+    smaller = ('tamano', lambda b: (b['size'] or 0),
+               lambda b: human_size(b['size']))
+    cover  = ('portada', lambda b: 0 if b.get('has_cover') else 1,
+              lambda b: 'con portada' if b.get('has_cover') else 'sin portada')
+    liborder = ('orden de las bibliotecas en el comando',
+                lambda b: b['lib_index'], libname)
+    liborder_rev = ('orden inverso de las bibliotecas',
+                    lambda b: -b['lib_index'], libname)
+    id_low  = ('id mas bajo', lambda b: b['id'], lambda b: 'id={}'.format(b['id']))
+    id_high = ('id mas alto', lambda b: -b['id'], lambda b: 'id={}'.format(b['id']))
+
+    if strategy == 'largest':
+        return [pref, bigger, liborder, id_low]
+    if strategy == 'smallest':
+        return [pref, smaller, liborder, id_low]
+    if strategy == 'oldest':
+        return [pref, liborder, id_low]
+    if strategy == 'newest':
+        return [pref, liborder_rev, id_high]
+    # 'plugin' / 'best': el mismo orden que aplica el plugin en Calibre.
+    return [pref, fmt, origin, bigger, cover, liborder, id_low]
+
+
+def _keep_sort_key(strategy, prefer_rank):
+    """Clave de orden: el PRIMER libro tras ordenar es el que se conserva."""
+    criteria = _keep_criteria(strategy, prefer_rank or {})
+    return lambda b: tuple(value(b) for _label, value, _fmt in criteria)
+
+
+def explain_keep(group, strategy, prefer_rank):
+    """
+    Explica por que se conserva la copia elegida, comparandola con su rival mas
+    cercano y diciendo QUE criterio los separo de verdad.
+
+    Devuelve (texto, criterio) o (texto, None) si todos empataban.
+    """
+    criteria = _keep_criteria(strategy, prefer_rank or {})
+    members = sorted(group['books'],
+                     key=lambda b: tuple(v(b) for _l, v, _f in criteria))
+    keep = members[0]
+    if len(members) < 2:
+        return 'unica copia', None
+    rival = members[1]
+
+    for label, value, fmt in criteria:
+        va, vb = value(keep), value(rival)
+        if va != vb:
+            return ('decide {} -- {} (id={}) frente a {} (id={})'.format(
+                label, fmt(keep), keep['id'], fmt(rival), rival['id']), label)
+    return ('todas las copias empatan en todos los criterios; se conserva '
+            'id={} por orden estable'.format(keep['id']), None)
 
 
 def decide_group(group, strategy='best', prefer_rank=None):
     """
     Marca en el grupo cual se conserva ('keep') y cuales sobran ('drop').
 
-    Salvaguarda: si un candidato a borrar tiene FORMATOS que la copia conservada
-    no tiene (p. ej. tambien un PDF), borrarlo perderia ese fichero.  Se marca
-    'blocked' y no se borra, aunque el EPUB sea identico.
+    Salvaguarda: si un candidato a borrar tiene formatos NO COMPARADOS que la
+    copia conservada no tiene (p. ej. tambien un PDF), borrarlo perderia ese
+    fichero.  Se marca 'blocked' y no se borra, aunque el EPUB sea identico.
+    EPUB y AZW3 no cuentan como formatos a proteger: son los que se comparan y
+    el criterio ya decide entre ellos.
     """
     prefer_rank = prefer_rank or {}
     members = sorted(group['books'], key=_keep_sort_key(strategy, prefer_rank))
@@ -804,7 +871,14 @@ def decide_group(group, strategy='best', prefer_rank=None):
     keep_fmts = set(keep.get('formats') or ())
     drops, blocked = [], []
     for b in members[1:]:
-        extra = sorted(set(b.get('formats') or ()) - keep_fmts)
+        # Solo protegen los formatos que NO participan en la comparacion.
+        # EPUB y AZW3 se excluyen a proposito: son las dos caras del mismo libro
+        # y el criterio ya dice que EPUB gana a AZW3, asi que proteger un AZW3
+        # "porque es el unico AZW3" anularia el criterio y no borraria nunca las
+        # copias en ese formato.  Un PDF, un MOBI o un DOCX si se protegen: no se
+        # han comparado y perderlos seria una perdida real de contenido.
+        extra = sorted((set(b.get('formats') or ()) - keep_fmts)
+                       - set(SUPPORTED_FORMATS))
         if extra:
             b = dict(b)
             b['extra_formats'] = extra
@@ -815,7 +889,83 @@ def decide_group(group, strategy='best', prefer_rank=None):
     group['drop'] = drops
     group['blocked'] = blocked
     group['reclaimable'] = sum(b['size'] for b in drops)
+    group['why'], group['why_criterion'] = explain_keep(group, strategy, prefer_rank)
     return group
+
+
+def verify_all_formats(groups, cache, cache_path, jobs=None):
+    """
+    Comprueba que los formatos SECUNDARIOS de cada copia marcada para borrar
+    tienen el mismo contenido que el grupo.
+
+    De cada registro de Calibre solo se compara un fichero (EPUB si lo hay, si no
+    AZW3).  Si un registro tiene ademas un AZW3 y ese AZW3 fuera OTRO libro -- una
+    edicion distinta, o un error de metadatos que junto dos obras bajo el mismo
+    id -- borrar el registro por su EPUB destruiria contenido que no esta en
+    ninguna otra copia.
+
+    Solo se verifican los candidatos a BORRAR, no toda la biblioteca: es donde
+    importa, y asi el coste (convertir AZW3 con ebook-convert) se limita a unos
+    pocos ficheros en vez de a todos.
+
+    Los registros que no superan la comprobacion salen de 'drop' y pasan a
+    'blocked' con el motivo, de modo que no entran en el plan de borrado.
+    """
+    tasks, owners = [], {}
+    for gi, g in enumerate(groups):
+        for b in g['drop']:
+            for fmt, path in sorted((b.get('format_paths') or {}).items()):
+                if path == b['path']:
+                    continue          # el formato principal ya se comparo
+                key = '{}|{}'.format(b['uid'], fmt)
+                tasks.append({'uid': key, 'path': path, 'format': fmt,
+                              'size': _safe_size(path), 'mtime': _safe_mtime(path)})
+                owners[key] = (gi, b['uid'], fmt, path)
+    if not tasks:
+        return 0, 0
+
+    print('\nVerificando {} formatos secundarios de las copias a borrar '
+          '(para asegurar que no contienen otro libro)...'.format(len(tasks)))
+    hits, misses = split_cached(tasks, cache) if cache else ({}, list(tasks))
+    fps = dict(hits)
+    if misses:
+        compute_fingerprints(misses, jobs=jobs,
+                             use_processes=not running_inside_calibre(),
+                             results=fps)
+    if cache_path:
+        save_cache(cache_path, update_cache(cache, tasks, fps))
+
+    by_uid = {}
+    for g in groups:
+        for b in g['drop']:
+            by_uid[b['uid']] = b
+
+    moved = 0
+    for key, (gi, uid, fmt, path) in owners.items():
+        r = fps.get(key)
+        if r is None:
+            continue
+        g = groups[gi]
+        b = by_uid.get(uid)
+        if b is None or b not in g['drop']:
+            continue                  # ya movido por otro formato
+        problem = None
+        if r.get('error'):
+            problem = 'no se pudo leer su {}: {}'.format(fmt, r['error'])
+        elif not r.get('fingerprint'):
+            problem = 'su {} no tiene texto comparable'.format(fmt)
+        elif r['fingerprint'] != g['fingerprint']:
+            problem = 'su {} tiene CONTENIDO DISTINTO al del grupo'.format(fmt)
+        if problem:
+            g['drop'].remove(b)
+            b = dict(b)
+            b['mismatch'] = problem
+            g['blocked'].append(b)
+            moved += 1
+
+    for g in groups:
+        g['reclaimable'] = sum(x['size'] for x in g['drop'])
+    return len(tasks), moved
 
 
 def build_prefer_rank(prefer_libraries):
@@ -1007,6 +1157,56 @@ def find_calibredb():
     return None
 
 
+def export_before_delete(library_path, ids, dest, batch=100):
+    """
+    Exporta con 'calibredb export' los libros que se van a borrar, ANTES de
+    borrarlos.  Guarda los ficheros, la portada y los metadatos en un OPF.
+
+    Es la red de seguridad que NO depende de ninguna papelera:
+
+      - La papelera de Calibre y la de Windows se purgan (la de la biblioteca,
+        a los pocos dias), asi que "es reversible" tiene fecha de caducidad.
+      - Una biblioteca en un disco de red o externo puede no tener papelera del
+        sistema, y entonces el borrado del fichero es definitivo.
+      - Una carpeta exportada se puede volver a anadir a Calibre con
+        'calibredb add' o arrastrandola, y el OPF recupera los metadatos.
+
+    Devuelve (n_ficheros_exportados, errores).  Si falla, el llamante NO debe
+    borrar: mejor no borrar nada que borrar sin copia.
+    """
+    exe = find_calibredb()
+    if not exe:
+        return 0, ['No encuentro calibredb: no puedo exportar antes de borrar.']
+    try:
+        os.makedirs(dest, exist_ok=True)
+    except Exception as exc:
+        return 0, ['No puedo crear {}: {}'.format(dest, exc)]
+
+    ids = sorted(ids)
+    errors = []
+    for i in range(0, len(ids), batch):
+        chunk = ids[i:i + batch]
+        cmd = [exe, '--with-library', library_path, 'export',
+               '--to-dir', dest, ','.join(str(x) for x in chunk)]
+        kwargs = {}
+        if sys.platform == 'win32':
+            kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, **kwargs)
+        if proc.returncode != 0:
+            msg = (proc.stderr or b'').decode('utf-8', 'replace').strip()
+            errors.append('calibredb export fallo en {}: {}'.format(
+                library_path, msg or 'codigo {}'.format(proc.returncode)))
+            break
+
+    n = 0
+    for _root, _dirs, files in os.walk(dest):
+        n += len(files)
+    if not errors and n == 0:
+        errors.append('calibredb export no genero ningun fichero en {}'.format(dest))
+    return n, errors
+
+
 def delete_ids(library_path, ids, batch=200):
     """
     Borra 'ids' de 'library_path' con calibredb (sin --permanent: papelera de la
@@ -1081,12 +1281,38 @@ def apply_plan(plan, args):
             return {'deleted': 0, 'errors': [], 'rejected': rejected, 'backups': {}}
 
     deleted, errors, backups = 0, [], {}
+    export_root = None
+    if not args.no_export:
+        export_root = args.export_dir or os.path.join(
+            args.out_dir or _DEFAULT_OUT_DIR,
+            'exportadas_{}'.format(time.strftime('%Y%m%d_%H%M%S')))
+        print('Exportando una copia de cada libro antes de borrarlo en:')
+        print('  {}'.format(export_root))
+
     for lib, entries in sorted(ok_by_lib.items()):
+        ids = [e['id'] for e in entries]
+
+        # 1. Copia exportada. Si falla, NO se borra nada de esta biblioteca.
+        if export_root:
+            sub = os.path.join(export_root, re.sub(r'[^\w.-]+', '_',
+                                                  os.path.basename(lib.rstrip('/\\')) or 'lib'))
+            n_files, exp_errs = export_before_delete(lib, ids, sub)
+            if exp_errs:
+                errors.extend(exp_errs)
+                print('  {}: NO borro nada, la exportacion fallo.'.format(lib))
+                for e in exp_errs:
+                    print('    ! {}'.format(e))
+                continue
+            print('  {}: exportados {} ficheros'.format(lib, n_files))
+
+        # 2. Copia de metadata.db.
         if not args.no_backup:
             bk = backup_metadata_db(lib)
             backups[lib] = bk
             print('  copia de seguridad: {}'.format(bk or 'FALLIDA'))
-        n, errs = delete_ids(lib, [e['id'] for e in entries])
+
+        # 3. Borrado.
+        n, errs = delete_ids(lib, ids)
         deleted += n
         errors.extend(errs)
         print('  {}: borrados {}/{}'.format(lib, n, len(entries)))
@@ -1170,6 +1396,8 @@ def _row(b, role, libraries, extra_tags=()):
     if b.get('extra_formats'):
         extra = ' <span class="tag blk">solo aqui: {}</span>'.format(
             html.escape(', '.join(b['extra_formats'])))
+    if b.get('mismatch'):
+        extra += ' <span class="tag blk">{}</span>'.format(html.escape(b['mismatch']))
     tags = ''.join(' <span class="tag bin">{}</span>'.format(html.escape(t))
                    for t in extra_tags)
     origin = b.get('origin') or 'desconocido'
@@ -1219,19 +1447,15 @@ def _group_card(g, i, libraries):
         parts.append(_row(b, 'blocked', libraries))
     parts.append('</tbody></table>')
     keep = g['keep']
-    why = ['EPUB' if keep['format'] == 'EPUB' else keep['format']]
-    if (keep.get('origin') or '') == 'editorial':
-        why.append('edicion editorial')
-    elif (keep.get('origin') or '') == 'calibre':
-        why.append('conversion de Calibre')
-    why.append('el mayor de {} ({})'.format(len(g['books']), human_size(keep['size'])))
-    parts.append('<p class="why">Se conserva id={} porque: {}.{}</p>'.format(
-        keep['id'], html.escape(' > '.join(why)),
-        ' Motivos de procedencia: ' + html.escape('; '.join(keep.get('origin_reasons') or []))
+    parts.append('<p class="why">Se conserva id={}: {}.{}</p>'.format(
+        keep['id'], html.escape(g.get('why') or ''),
+        ' Procedencia: ' + html.escape('; '.join(keep.get('origin_reasons') or []))
         if keep.get('origin_reasons') else ''))
     if g['blocked']:
-        parts.append('<p class="meta">Las filas en naranja NO se borran: tienen '
-                     'formatos que la copia conservada no tiene y se perderian.</p>')
+        parts.append('<p class="meta">Las filas en naranja NO se borran: o tienen '
+                     'formatos no comparados que la copia conservada no tiene, o '
+                     'alguno de sus ficheros no coincide con el contenido del '
+                     'grupo.</p>')
     parts.append('</div>')
     return parts
 
@@ -1251,6 +1475,11 @@ def write_html_report(out_path, groups, skipped, stats):
              .format(n=len(libraries), when=html.escape(stats['when']),
                      backend=html.escape(stats['backend']), mc=mc, mt=html.escape(mt)))
 
+    p.append('<p class="sub">Criterio aplicado: <code>--keep {}</code>{}</p>'.format(
+        html.escape(stats.get('keep_strategy') or 'plugin'),
+        (' &middot; bibliotecas preferidas: <code>' +
+         html.escape(', '.join(stats.get('prefer_libraries') or ())) + '</code>')
+        if stats.get('prefer_libraries') else ''))
     p.append('<header class="summary"><div class="stats">')
     for v, l in ((stats['n_books'], 'libros analizados'),
                  (len(groups), 'grupos duplicados'),
@@ -1379,6 +1608,10 @@ Otras formas de indicar las bibliotecas:
                    help='No usar la cache de huellas (releer todos los libros).')
     g.add_argument('--clear-cache', action='store_true',
                    help='Borrar la cache de huellas antes de escanear.')
+    g.add_argument('--no-verify-formats', action='store_true',
+                   help='No comprobar los formatos secundarios (p. ej. el AZW3) de '
+                        'las copias a borrar. Mas rapido, pero podrias borrar un '
+                        'registro cuyo AZW3 fuese en realidad otro libro.')
     g.add_argument('--epub-only', action='store_true',
                    help='Ignorar los AZW3. Util para una primera pasada rapida: '
                         'cada AZW3 hay que convertirlo con ebook-convert.')
@@ -1399,6 +1632,13 @@ Otras formas de indicar las bibliotecas:
                    help='No borrar copias que esten en una biblioteca distinta de la '
                         'que conserva el libro (solo informarlas).')
     g.add_argument('--yes', action='store_true', help='No pedir confirmacion.')
+    g.add_argument('--no-export', action='store_true',
+                   help='NO exportar una copia de los libros antes de borrarlos. '
+                        'Por defecto se exporta: es la unica copia que no caduca, '
+                        'porque las papeleras se purgan.')
+    g.add_argument('--export-dir', metavar='CARPETA',
+                   help='Donde exportar la copia previa (por defecto: '
+                        'dedupe_out/exportadas_<fecha>).')
     g.add_argument('--no-backup', action='store_true',
                    help='No copiar metadata.db antes de borrar (no recomendado).')
     g.add_argument('--force-running', action='store_true',
@@ -1407,6 +1647,8 @@ Otras formas de indicar las bibliotecas:
                    help='Aceptar entradas cuyo fichero cambio de fecha pero no de '
                         'tamano ni de ruta.')
 
+    p.add_argument('--cache-info', action='store_true',
+                   help='Decir donde esta la cache y si es valida, sin escanear.')
     p.add_argument('--doctor', action='store_true',
                    help='Comprobar el entorno (interprete, lxml, calibredb) y salir.')
     p.add_argument('--verbose', '-v', action='store_true', help='Log detallado.')
@@ -1423,7 +1665,16 @@ def main(argv=None):
         doctor()
         return 0
 
+    if args.cache_info:
+        out_dir = args.out_dir or _DEFAULT_OUT_DIR
+        cache_path = os.path.join(out_dir, CACHE_NAME)
+        print('Firma actual del motor: {}'.format(engine_signature()))
+        load_cache(cache_path)
+        return 0
+
     if args.apply:
+        if not getattr(args, 'out_dir', None):
+            args.out_dir = _DEFAULT_OUT_DIR
         plan = read_plan(args.apply)
         print('Plan: {}'.format(args.apply))
         print('Creado: {} | bibliotecas: {} | copias a borrar: {}'.format(
@@ -1520,12 +1771,24 @@ def main(argv=None):
             print('Hecho. Repite el mismo comando y seguira donde lo dejo.')
             return 130
     if cache_path:
-        save_cache(cache_path, update_cache(cache, books, fps))
+        entries = update_cache(cache, books, fps)
+        save_cache(cache_path, entries)
+        if os.path.exists(cache_path):
+            print('Cache guardada: {} entradas ({:.1f} KB).'.format(
+                len(entries), os.path.getsize(cache_path) / 1024.0))
 
     timing_summary(fps)
     groups, skipped = group_duplicates(books, fps)
     prefer_rank = build_prefer_rank(args.prefer_library)
     groups = [decide_group(g, args.keep, prefer_rank) for g in groups]
+
+    # Antes de dar por buena ninguna copia a borrar, comprobar que TODOS sus
+    # ficheros son el mismo libro, no solo el que se comparo.
+    if not args.no_verify_formats:
+        n_checked, n_moved = verify_all_formats(groups, cache, cache_path, jobs=args.jobs)
+        if n_checked:
+            print('  verificados {}; retirados del borrado por no coincidir: {}'.format(
+                n_checked, n_moved))
 
     n_drop = sum(len(g['drop']) for g in groups)
     n_blocked = sum(len(g['blocked']) for g in groups)
@@ -1556,7 +1819,8 @@ def main(argv=None):
         'when': time.strftime('%Y-%m-%d %H:%M'), 'n_books': len(books),
         'n_drop': n_drop, 'n_cross': n_cross, 'reclaimable': reclaimable,
         'elapsed': time.time() - started, 'deleted': deleted > 0,
-        'plan': plan_path,
+        'plan': plan_path, 'keep_strategy': args.keep,
+        'prefer_libraries': list(args.prefer_library or ()),
     }
     report = args.report or os.path.join(out_dir, 'duplicados_{}.html'.format(stamp))
     write_html_report(report, groups, skipped, stats)
