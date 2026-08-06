@@ -1291,10 +1291,17 @@ def export_before_delete(library_path, ids, dest, batch=100):
 
     ids = sorted(ids)
     errors = []
+    # La plantilla por defecto de calibredb ('{author_sort}/{title}/{title} -
+    # {authors}') NO lleva el id, y aqui se exportan justo duplicados: varios
+    # libros comparten titulo y autor, calibredb los escribe en la MISMA
+    # carpeta y unos OPF pisan a otros (menos metadata.opf que libros, copia
+    # incompleta en silencio). El {id} en la plantilla lo evita.
+    template = '{author_sort}/{title} ({id})/{title} - {authors} ({id})'
     for i in range(0, len(ids), batch):
         chunk = ids[i:i + batch]
         cmd = [exe, '--with-library', library_path, 'export',
-               '--to-dir', dest, ','.join(str(x) for x in chunk)]
+               '--to-dir', dest, '--template', template,
+               ','.join(str(x) for x in chunk)]
         kwargs = {}
         if sys.platform == 'win32':
             kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -1562,6 +1569,14 @@ def _short_lib(path, libraries):
     return base
 
 
+def _id_search(ids):
+    """Linea pegable en la busqueda de Calibre.
+
+    Calibre no admite 'id:1,2,3' (solo casa el primero); hace falta
+    unir con 'or': 'id:1 or id:2 or id:3'.
+    """
+    return ' or '.join('id:{}'.format(i) for i in ids)
+
 def _row(b, role, libraries, extra_tags=()):
     cls = {'keep': 'keep', 'blocked': 'blocked'}.get(role, '')
     lab = {'keep': ('keep', 'CONSERVAR'), 'drop': ('drop', 'borrar'),
@@ -1710,8 +1725,8 @@ def write_html_report(out_path, groups, skipped, stats):
                 continue
             p.append('<p class="meta" style="margin:0">{}</p>'.format(
                 html.escape(_short_lib(lib, libraries))))
-            p.append('<span class="idsearch">id:{}</span>'.format(
-                ','.join(str(i) for i in sorted(ids))))
+            p.append('<span class="idsearch">{}</span>'.format(
+                _id_search(sorted(ids))))
         p.append('</div>')
 
     problem_books = stats.get('problem_books') or ()
@@ -1741,13 +1756,13 @@ def write_html_report(out_path, groups, skipped, stats):
             p.append('<p class="meta" style="margin:.6rem 0 0"><b>{}</b> '
                      '&mdash; {} libros</p>'.format(
                          html.escape(_short_lib(lib, libraries)), len(all_ids)))
-            p.append('<span class="idsearch">id:{}</span>'.format(
-                ','.join(str(i) for i in all_ids)))
+            p.append('<span class="idsearch">{}</span>'.format(
+                _id_search(all_ids)))
             for key, ids in sorted(per_issue.items()):
                 p.append('<p class="meta" style="margin:0">{} ({})</p>'.format(
                     html.escape(labels.get(key, key)), len(set(ids))))
-                p.append('<span class="idsearch">id:{}</span>'.format(
-                    ','.join(str(i) for i in sorted(set(ids)))))
+                p.append('<span class="idsearch">{}</span>'.format(
+                    _id_search(sorted(set(ids)))))
 
         p.append('<table><thead><tr><th>id</th><th>Biblioteca</th><th>Titulo</th>'
                  '<th>Problemas</th></tr></thead><tbody>')
@@ -1786,14 +1801,14 @@ def write_html_report(out_path, groups, skipped, stats):
             p.append('<p class="meta" style="margin:.6rem 0 0"><b>{}</b> '
                      '&mdash; {} libros</p>'.format(
                          html.escape(_short_lib(lib, libraries)), len(all_ids)))
-            p.append('<span class="idsearch">id:{}</span>'.format(
-                ','.join(str(i) for i in all_ids)))
+            p.append('<span class="idsearch">{}</span>'.format(
+                _id_search(all_ids)))
             if len(per_reason) > 1:
                 for motivo, ids in sorted(per_reason.items()):
                     p.append('<p class="meta" style="margin:0">{} ({})</p>'.format(
                         html.escape(motivo), len(ids)))
-                    p.append('<span class="idsearch">id:{}</span>'.format(
-                        ','.join(str(i) for i in sorted(ids))))
+                    p.append('<span class="idsearch">{}</span>'.format(
+                        _id_search(sorted(ids))))
 
         p.append('<table><thead><tr><th>id</th><th>Biblioteca</th>'
                  '<th>Titulo</th><th>Motivo</th></tr></thead><tbody>')
