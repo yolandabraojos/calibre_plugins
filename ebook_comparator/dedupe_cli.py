@@ -224,7 +224,8 @@ def inspect_book(path):
         for n in sorted(items)[:10]:
             print('     {}'.format(n))
 
-    chapters, ignored = extractor.extract_book_chapters(path)
+    issues = []
+    chapters, ignored = extractor.extract_book_chapters(path, issues=issues)
     print('\nCapitulos extraidos: {}'.format(len(chapters)))
     for n, text in list(chapters.items())[:5]:
         print('   {:50} {} caracteres'.format(n[:50], len(text)))
@@ -236,6 +237,60 @@ def inspect_book(path):
         reasons[i['reason']].append(i['name'])
     for reason, items in sorted(reasons.items()):
         print('   {} ({}): {}'.format(reason, len(items), ', '.join(items[:4])))
+
+    print('\nProblemas de formato: {}'.format(
+        ', '.join(extractor.ISSUE_LABELS.get(i, i) for i in issues) or 'ninguno'))
+
+    # Diagnostico especifico de 'muy_troceado': por que SI o NO se marca, grupo
+    # a grupo y fragmento a fragmento, con el MISMO criterio que usaria
+    # merge_splits.py al fusionar de verdad. Pensado para pegar aqui la salida
+    # cuando un libro se marca (o se deja de marcar) de forma inesperada.
+    if ext == '.epub':
+        try:
+            with zipfile.ZipFile(path) as zf2:
+                names2 = zf2.namelist()
+                manifest_html = extractor._get_manifest_html_items(zf2, names2)
+                cand = {n for n in names2
+                       if (extractor._is_html_file(n) or n in manifest_html)
+                       and not extractor._is_system_file(n)}
+                spine_ord = [n for n in extractor._get_spine_order(zf2, names2) if n in cand]
+                extra = sorted(n for n in cand if n not in set(spine_ord))
+                ordered2 = spine_ord + extra
+                n_split = sum(1 for n in cand if '_split_' in n.lower())
+                print('\nFicheros HTML: {} | con "_split_" en el nombre: {} '
+                     '(umbral: {})'.format(len(cand), n_split, extractor.DEFAULT_MIN_SPLITS))
+                if n_split:
+                    groups = extractor.group_spine(ordered2)
+                    print('Grupos de fragmentos consecutivos con la misma base: {}'.format(len(groups)))
+                    total_mergeable = 0
+                    for gi, g in enumerate(groups, 1):
+                        raws = []
+                        for n in g:
+                            try:
+                                raws.append(zf2.read(n))
+                            except Exception:
+                                raws.append(b'')
+                        sizes = [len(r) for r in raws]
+                        kinds = [extractor.classify_fragment_start(
+                                    extractor._parse_fragment_root(r)) for r in raws]
+                        print('\n  Grupo {}: {} fragmentos'.format(gi, len(g)))
+                        for n, k, s in zip(g, kinds, sizes):
+                            print('     {:50} {:8}  {}'.format(n[-50:], human_size(s), k))
+                        tramos = extractor.explain_tramos(
+                            sizes, kinds, extractor.DEFAULT_MAX_MERGED_KB * 1024)
+                        for idxs, motivo in tramos:
+                            mark = ' -> SE FUSIONARIAN' if len(idxs) >= 2 else ''
+                            print('     tramo {}: {}{}'.format(
+                                [g[i][-30:] for i in idxs], motivo, mark))
+                            if len(idxs) >= 2:
+                                total_mergeable += len(idxs) - 1
+                    print('\nFragmentos que DESAPARECERIAN al fusionar: {} '
+                         '(umbral: {})'.format(total_mergeable, extractor.DEFAULT_MIN_SPLITS))
+                    print('-> {}'.format(
+                        'SI se marcaria muy_troceado' if total_mergeable >= extractor.DEFAULT_MIN_SPLITS
+                        else 'NO se marcaria muy_troceado (son capitulos/secciones legitimas)'))
+        except Exception as exc:
+            print('\n  (no se pudo hacer el diagnostico de fragmentos: {})'.format(exc))
 
     origin, why = extractor.epub_provenance(path)
     print('\nProcedencia: {} {}'.format(origin, why or ''))
@@ -1397,6 +1452,9 @@ def apply_plan(plan, args):
             answer = input('Escribe BORRAR para confirmar: ').strip()
         except EOFError:
             answer = ''
+        except KeyboardInterrupt:
+            print('\nCancelado: no se ha borrado nada.')
+            return {'deleted': 0, 'errors': [], 'rejected': rejected, 'backups': {}}
         if answer != 'BORRAR':
             print('Cancelado: no se ha borrado nada.')
             return {'deleted': 0, 'errors': [], 'rejected': rejected, 'backups': {}}
@@ -1442,6 +1500,10 @@ def apply_plan(plan, args):
                                     'rejected': rejected, 'backups': {}}
                     except EOFError:
                         pass
+                    except KeyboardInterrupt:
+                        print('\n  Cancelado: no se ha borrado nada.')
+                        return {'deleted': 0, 'errors': ['espacio insuficiente'],
+                                'rejected': rejected, 'backups': {}}
         except Exception:
             pass
 
@@ -2182,6 +2244,9 @@ def run_convert_azw3(libraries, args):
         except EOFError:
             print('Cancelado.')
             return 0
+        except KeyboardInterrupt:
+            print('\nCancelado: no se ha tocado nada.')
+            return 0
 
     # Respaldo de metadata.db, una vez por biblioteca y antes de escribir.
     backups = {}
@@ -2781,4 +2846,8 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print('\nInterrumpido.')
+        sys.exit(130)

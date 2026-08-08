@@ -402,6 +402,9 @@ _CHAPTER_TEXT_RE = re.compile(
 # por "Parte" o "Capitulo" usado como nombre propio colaria como titulo.
 _CHAPTER_TEXT_MAX_LEN = 80
 
+# Ver el comentario dentro de classify_fragment_start().
+_HEADING_LOOKAHEAD_CHARS = 400
+
 
 def _looks_like_chapter_text(text):
     text = (text or '').strip()
@@ -535,7 +538,20 @@ def classify_fragment_start(root):
         if has_image:
             return 'image'
 
-    seen = 0
+    # Cuanto texto de "portada" (epigrafe, cita, dedicatoria corta...) se
+    # admite ANTES de un h1-h6 y el fragmento se sigue contando como el mismo
+    # arranque de capitulo.  Sin este margen, un capitulo real que empieza con
+    # una cita de una o dos lineas antes del titulo se clasificaba como
+    # 'content' porque el bucle se rendia a las DOS lineas de texto, sin
+    # llegar nunca a visitar el <h1> que venia justo despues (encontrado
+    # 2026-08-06: un libro con capitulos reales seguia marcandose como
+    # 'muy_troceado' porque cada fragmento empezaba con un par de lineas de
+    # epigrafe). Un titulo que aparece MAS ALLA de este margen no cuenta como
+    # arranque: es mas probable que sea un subtitulo interno a mitad de un
+    # capitulo largo (p. ej. un "Nota" a pie de seccion), no el principio de
+    # uno nuevo.
+    chars_seen = 0
+    elems_seen = 0
     for el in body.iter():
         if el is body:
             continue
@@ -546,7 +562,9 @@ def classify_fragment_start(root):
             heading_text = ''.join(el.itertext()).strip()
             if _looks_like_toc_text(heading_text):
                 return 'toc'
-            return 'heading'
+            if chars_seen <= _HEADING_LOOKAHEAD_CHARS:
+                return 'heading'
+            return 'content'
         if bare == 'img':
             continue  # una imagen antes del titulo no cuenta como contenido
         if bare in ('ul', 'ol') and _is_link_list(el):
@@ -560,8 +578,9 @@ def classify_fragment_start(root):
             return 'toc'
         if own_text and _looks_like_chapter_text(own_text):
             return 'chapter_text'
-        seen += 1
-        if seen >= 2:
+        chars_seen += len(own_text)
+        elems_seen += 1
+        if chars_seen > _HEADING_LOOKAHEAD_CHARS or elems_seen >= 12:
             return 'content'
     return 'content'
 
