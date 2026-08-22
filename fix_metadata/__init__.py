@@ -17,7 +17,7 @@ class ActionFixMetadata(InterfaceActionBase):
                                 'flags low-quality comments/synopses, and canonicalises tags')
     supported_platforms     = ['windows', 'osx', 'linux']
     author                  = 'Yolanda Braojos'
-    version                 = (1, 7, 8)
+    version                 = (1, 7, 10)
     minimum_calibre_version = (2, 0, 0)
 
     actual_plugin = 'calibre_plugins.fix_metadata.action:FixMetadataAction'

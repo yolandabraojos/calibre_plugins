@@ -98,8 +98,23 @@ class MLClassifier:
         self.default_threshold = default_threshold
 
         mood = mood if mood is not None else _load_json('mood_rules.json')
+        # El valor de cada tema puede ser la regex a secas (formato antiguo) o
+        # un objeto {"regex": ..., "desc": ...}. La descripcion no la usa el
+        # motor local: es para el LLM, que solo ve los NOMBRES del vocabulario
+        # y sin ella tiene que adivinar que cubre cada tema (ver llm_jobs.py).
+        # Una regex vacia o imposible (p.ej. "$^") define un tema que SOLO
+        # puede aplicar el LLM razonando.
         self._mood = []
-        for name, pattern in mood.items():
+        self.mood_desc = {}
+        for name, regla in mood.items():
+            if isinstance(regla, dict):
+                pattern = regla.get('regex') or regla.get('pattern') or ''
+                self.mood_desc[name] = regla.get('desc') or ''
+            else:
+                pattern = regla or ''
+                self.mood_desc[name] = ''
+            if not pattern:
+                continue
             try:
                 self._mood.append((name, re.compile(pattern)))
             except re.error:

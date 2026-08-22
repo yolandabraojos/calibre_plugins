@@ -5,11 +5,26 @@ train_book_classifier.py -- Reentrena el modelo local del Book Classifier (eje 1
 =============================================================================================
 
 Lee TODOS los .csv de una carpeta de datos (por defecto _datos_ejemplo/ en la raiz
-del repo), sea cual sea su nombre, y usa la columna `#libreria` (la que rellena el
-rescate con IA, ver book_classifier/llm_jobs.py) como etiqueta de verdad. Reproduce
-EXACTAMENTE el pipeline de inferencia de book_classifier/ml_classifier.py (mismo
-normalize(), mismo TfidfVectorizer, misma LogisticRegression) para que el
-model_weights.json resultante funcione en el plugin sin tocar ml_classifier.py.
+del repo), sea cual sea su nombre, y reproduce EXACTAMENTE el pipeline de inferencia
+de book_classifier/ml_classifier.py (mismo normalize(), mismo TfidfVectorizer, misma
+LogisticRegression) para que el model_weights.json resultante funcione en el plugin
+sin tocar ml_classifier.py.
+
+ETIQUETA: la columna de estanteria (`#libreria`) es la buena. Si falta o esta en
+'(revisar)', se usa la que propuso el LLM (`#libreria_ia`) siempre que su confianza
+(`#confianza_ia`) llegue a --min-conf-ia (90 por defecto, el mismo liston que la
+promocion del plugin). Es lo unico que permite tener ejemplos de una estanteria
+recien creada sin etiquetar miles de libros a mano. Si las dos existen y discrepan,
+manda la humana. El informe separa cuantos ejemplos son de cada origen y da la
+accuracy SOLO sobre los de etiqueta humana: sobre los de la IA se estaria midiendo
+parecido con el LLM, no acierto.
+
+SENAL: al texto (titulo + sinopsis + tags) se suman los TEMAS de `#clasificacion` y
+`#clasificacion_ia`. Viven en columnas propias, no en `tags`, asi que hasta la
+3.15.0 no entraban en el entrenamiento pese a ser senal fuerte.
+
+Los nombres de todas esas columnas se cambian por linea de ordenes (--col-libreria,
+--col-libreria-ia, --col-confianza-ia, --col-temas, --col-temas-ia).
 
 FUGA: se excluyen del texto de entrada las tags que codifican directamente la
 libreria (grupo 'Genero'/'Biblioteca'/'Libreria' en formato canonico
@@ -117,20 +132,63 @@ def tag_value(tag):
     return t
 
 
-# Debe coincidir con LIBRERIAS de book_classifier/llm_rescue_engine.py y de
-# scripts/llm_rescue.py (no hay un unico sitio de donde importarlo: los tres
-# ficheros llevan su propia copia, sincronizar a mano si cambia).
-EXPECTED_LIBRERIAS = [
-    "Romance contemporáneo",
-    "Romance histórico",
-    "Romantasy",
-    "Paranormal",
-    "Fantasía",
-    "Ciencia Ficción",
-    "Misterio·Thriller·Terror",
-    "Ficción general",
-    "No-Ficción",
-]
+# El catalogo de librerias SE IMPORTA del motor del plugin, que es la fuente
+# de verdad. Antes habia una copia a mano aqui y otra en scripts/llm_rescue.py
+# con una nota de "sincronizar a mano"; se desincronizaron en cuanto cambiaron
+# las estanterias. El motor solo usa la libreria estandar, asi que se puede
+# cargar por ruta desde aqui.
+def _librerias_del_plugin():
+    import importlib.util
+    ruta = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), os.pardir,
+        'book_classifier', 'llm_rescue_engine.py'))
+    if not os.path.exists(ruta):
+        raise SystemExit(
+            'No encuentro el catalogo de librerias en:\n  {}\n'
+            'Este script valida las clases del CSV contra el catalogo del '
+            'plugin, asi que necesita el repositorio completo.'.format(ruta))
+    spec = importlib.util.spec_from_file_location('llm_rescue_engine', ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_ENG = _librerias_del_plugin()
+EXPECTED_LIBRERIAS = list(_ENG.LIBRERIAS)
+
+# Columnas del CSV exportado de calibre. Se pueden cambiar por linea de
+# ordenes: los nombres son los de la biblioteca de cada cual.
+COLS = {
+    'libreria':     '#libreria',        # estanteria (etiqueta de verdad)
+    'libreria_ia':  '#libreria_ia',     # estanteria que propuso el LLM
+    'confianza_ia': '#confianza_ia',    # 0-100
+    'temas':        '#clasificacion',   # temas del motor local
+    'temas_ia':     '#clasificacion_ia',# temas del LLM
+}
+
+# Confianza minima (0-100) para aceptar la estanteria del LLM como etiqueta
+# de entrenamiento cuando no hay una humana. Mismo listón que la promocion.
+MIN_CONF_IA = 90
+
+
+def tema_delata_libreria(tema):
+    """True si un TEMA equivale de hecho a una estanteria y por tanto es fuga.
+
+    Se mira la HOJA del nombre ('Subgenero (dot) Paranormal romance' ->
+    'Paranormal romance') y se pasa por el reconocedor del plugin, que incluye
+    los alias comerciales. Asi la lista se mantiene sola: si manana un tema
+    nuevo equivale a una balda, `norm_libreria` lo dira sin tocar este script.
+
+      'Paranormal romance'  -> Paranormal   -> FUGA (fuera)
+      'Terror sobrenatural' -> Terror       -> FUGA (fuera)
+      'Fantasia urbana'     -> Paranormal   -> FUGA (fuera)
+      'Vampiros'            -> (revisar)    -> se queda: describe contenido
+      'Cozy mystery'        -> (revisar)    -> se queda
+    """
+    hoja = str(tema or '').split('\u00b7')[-1].strip()
+    if not hoja:
+        return False
+    return _ENG.norm_libreria(hoja) != _ENG.REVISAR
 
 REVISAR_VALUES = {'', '(revisar)', '[revisar]', 'revisar', 'sin datos', '(sin datos)'}
 
@@ -161,10 +219,13 @@ def _read_csv_dicts(path):
     return reader.fieldnames or [], rows, null_count
 
 
-def load_rows(datos_dir):
-    """Lee TODOS los *.csv de datos_dir, sea cual sea su nombre. Los ficheros
-    sin columna #libreria (exports que no han pasado por el rescate con IA) se
-    listan pero se ignoran para entrenar."""
+def load_rows(datos_dir, cols=None):
+    """Lee TODOS los *.csv de datos_dir, sea cual sea su nombre. Se ignoran
+    los ficheros que no traen NINGUNA columna de estanteria (ni la principal
+    ni la de la IA): de esos no se puede sacar etiqueta."""
+    C = dict(COLS)
+    if cols:
+        C.update({k: v for k, v in cols.items() if v})
     paths = sorted(glob.glob(os.path.join(datos_dir, '*.csv')))
     if not paths:
         sys.exit("No se encontro ningun .csv en {!r}".format(datos_dir))
@@ -176,7 +237,7 @@ def load_rows(datos_dir):
         fieldnames, file_rows, null_count = _read_csv_dicts(p)
         if null_count:
             corrupted_files.append((os.path.basename(p), null_count))
-        if '#libreria' not in fieldnames:
+        if C['libreria'] not in fieldnames and C['libreria_ia'] not in fieldnames:
             skipped_files.append(os.path.basename(p))
             continue
         used_files.append(os.path.basename(p))
@@ -184,9 +245,10 @@ def load_rows(datos_dir):
     print("CSV encontrados: {} ({})".format(
         len(paths), ', '.join(os.path.basename(p) for p in paths)))
     if used_files:
-        print("  Con columna #libreria (usados): {}".format(', '.join(used_files)))
+        print("  Con columna de estanteria (usados): {}".format(', '.join(used_files)))
     if skipped_files:
-        print("  SIN columna #libreria (ignorados): {}".format(', '.join(skipped_files)))
+        print("  SIN {} ni {} (ignorados): {}".format(
+            C['libreria'], C['libreria_ia'], ', '.join(skipped_files)))
     if corrupted_files:
         print("\nAVISO: bytes nulos encontrados y eliminados (probable corrupcion de "
               "sincronizacion en la nube al exportar) -- pueden faltar filas del final; "
@@ -196,30 +258,89 @@ def load_rows(datos_dir):
     return rows
 
 
-def build_examples(rows):
-    """Filtra filas con #libreria valida, deduplica por (titulo,autor) -se
-    queda con la copia de sinopsis mas larga, descarta grupos con libreria en
-    conflicto- y construye (texto, etiqueta) por libro."""
+def _conf_ia(valor):
+    try:
+        return float(str(valor).strip().replace('%', ''))
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def _temas_limpios(*crudos):
+    """Temas de las columnas de temas, sin los que delatan la estanteria y
+    quedandose solo con la HOJA (el nombre del grupo -'Tono', 'Dinamica'- no
+    es contenido, es la etiqueta de la faceta: mismo criterio que tag_value)."""
+    out, vistos = [], set()
+    for crudo in crudos:
+        for t in str(crudo or '').split(','):
+            t = t.strip()
+            if not t or tema_delata_libreria(t):
+                continue
+            hoja = t.split('\u00b7')[-1].strip()
+            clave = hoja.lower()
+            if hoja and clave not in vistos:
+                vistos.add(clave)
+                out.append(hoja)
+    return out
+
+
+def build_examples(rows, cols=None, min_conf_ia=MIN_CONF_IA):
+    """Construye (texto, etiqueta, origen) por libro.
+
+    ETIQUETA: la columna de estanteria (`#libreria`) es la buena. Si falta o
+    esta en '(revisar)', se cae a la que propuso el LLM (`#libreria_ia`)
+    siempre que su confianza llegue a `min_conf_ia`. Sin ese respaldo no hay
+    forma de tener ejemplos de las estanterias nuevas sin etiquetar miles de
+    libros a mano; con el, el modelo local aprende de lo que ya resolvio la
+    IA. Cuando las dos existen y discrepan, manda la humana (no se mira
+    siquiera la de la IA).
+
+    TEXTO: titulo + sinopsis + tags + TEMAS (columnas `#clasificacion` y
+    `#clasificacion_ia`). Los temas viven en una columna propia, no en `tags`,
+    asi que hasta ahora no entraban en el entrenamiento pese a ser una senal
+    fuerte. Se excluyen los que equivalen a una estanteria (ver
+    `tema_delata_libreria`), igual que ya se excluian las tags del grupo
+    'Genero'.
+
+    Deduplica por (titulo, autor) quedandose con la copia de sinopsis mas
+    larga y descarta los grupos con estanteria en conflicto.
+    """
+    C = dict(COLS)
+    if cols:
+        C.update({k: v for k, v in cols.items() if v})
     diag = {'total': len(rows), 'sin_libreria': 0, 'revisar': 0, 'validas': 0,
-            'duplicados_descartados': 0, 'conflictos_descartados': 0}
+            'duplicados_descartados': 0, 'conflictos_descartados': 0,
+            'etiqueta_humana': 0, 'etiqueta_ia': 0, 'ia_sin_confianza': 0,
+            'temas_usados': 0}
     groups = {}
     order = []
     for row in rows:
-        lib = (row.get('#libreria') or '').strip()
-        if not lib:
-            diag['sin_libreria'] += 1
-            continue
-        if lib.lower() in REVISAR_VALUES:
-            diag['revisar'] += 1
-            continue
+        lib = (row.get(C['libreria']) or '').strip()
+        origen = 'humana'
+        if not lib or lib.lower() in REVISAR_VALUES:
+            falta = 'sin_libreria' if not lib else 'revisar'
+            lib_ia = (row.get(C['libreria_ia']) or '').strip()
+            conf = _conf_ia(row.get(C['confianza_ia']))
+            if lib_ia and lib_ia.lower() not in REVISAR_VALUES:
+                if conf >= min_conf_ia:
+                    lib, origen = lib_ia, 'ia'
+                else:
+                    diag['ia_sin_confianza'] += 1
+            if origen != 'ia':
+                diag[falta] += 1
+                continue
         diag['validas'] += 1
+        diag['etiqueta_ia' if origen == 'ia' else 'etiqueta_humana'] += 1
         title = row.get('title') or ''
         authors = row.get('authors') or ''
         key = (norm_key(title), norm_key(authors))
         if key not in groups:
             groups[key] = []
             order.append(key)
-        groups[key].append((lib, title, row.get('comments') or '', row.get('tags') or ''))
+        groups[key].append((lib, title, row.get('comments') or '',
+                            row.get('tags') or '',
+                            _temas_limpios(row.get(C['temas']),
+                                           row.get(C['temas_ia'])),
+                            origen))
 
     examples = []
     for key in order:
@@ -232,12 +353,17 @@ def build_examples(rows):
             continue
         if len(members) > 1:
             diag['duplicados_descartados'] += len(members) - 1
-        lib, title, comments, tags_raw = max(members, key=lambda m: len(m[2] or ''))
+        lib, title, comments, tags_raw, temas, _org = max(
+            members, key=lambda m: len(m[2] or ''))
+        # Si alguna copia trae etiqueta humana, el ejemplo cuenta como humano.
+        origen = 'humana' if any(m[5] == 'humana' for m in members) else 'ia'
         tags = [t.strip() for t in tags_raw.split(',') if t.strip()]
         clean_tags = [tag_value(t) for t in tags if not is_leak_tag(t)]
+        if temas:
+            diag['temas_usados'] += 1
         comments_txt = re.sub(r'<[^>]+>', ' ', comments)
-        text = ' '.join([title, comments_txt, ' '.join(clean_tags)])
-        examples.append((text, lib))
+        text = ' '.join([title, comments_txt, ' '.join(clean_tags), ' '.join(temas)])
+        examples.append((text, lib, origen))
     return examples, diag
 
 
@@ -258,7 +384,8 @@ def fit_vectorizer(min_df, max_df=0.4):
                             sublinear_tf=True, norm='l2')
 
 
-def train_holdout(texts, labels, min_df, test_size, seed, max_df=0.4):
+def train_holdout(texts, labels, min_df, test_size, seed, max_df=0.4,
+                  origins=None):
     """Entrena en un split train/test (SIN fuga: el vectorizador solo ve
     X_train) y devuelve un dict con las metricas de evaluacion sobre el
     holdout: accuracy, macro_f1, report (texto), vocab_size, can_stratify."""
@@ -269,8 +396,10 @@ def train_holdout(texts, labels, min_df, test_size, seed, max_df=0.4):
     class_counts = collections.Counter(labels)
     can_stratify = all(c >= 2 for c in class_counts.values())
     strat = labels if can_stratify else None
-    X_train, X_test, y_train, y_test = train_test_split(
-        texts, labels, test_size=test_size, random_state=seed, stratify=strat)
+    origins = list(origins) if origins else ['humana'] * len(labels)
+    X_train, X_test, y_train, y_test, _o_train, o_test = train_test_split(
+        texts, labels, origins, test_size=test_size, random_state=seed,
+        stratify=strat)
 
     vec = fit_vectorizer(min_df, max_df)
     Xtr = vec.fit_transform(X_train)
@@ -280,9 +409,17 @@ def train_holdout(texts, labels, min_df, test_size, seed, max_df=0.4):
     clf.fit(Xtr, y_train)
     y_pred = clf.predict(Xte)
 
+    # Accuracy SOLO sobre los libros con etiqueta humana. Es la metrica
+    # honesta: sobre los de etiqueta de la IA se estaria midiendo cuanto se
+    # parece el modelo local al LLM, no cuanto acierta.
+    hum = [i for i, o in enumerate(o_test) if o != 'ia']
+    acc_hum = (accuracy_score([y_test[i] for i in hum], [y_pred[i] for i in hum])
+               if hum else None)
     return {
         'can_stratify': can_stratify,
         'vocab_size': len(vec.vocabulary_),
+        'n_test_humana': len(hum),
+        'accuracy_humana': acc_hum,
         'accuracy': accuracy_score(y_test, y_pred),
         'macro_f1': f1_score(y_test, y_pred, average='macro', zero_division=0),
         'report': classification_report(y_test, y_pred, zero_division=0),
@@ -344,27 +481,56 @@ def main():
                           'idioma, sin lista de stopwords que mantener a mano')
     ap.add_argument('--test-size', type=float, default=0.2)
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--col-libreria', default=COLS['libreria'],
+                     help='columna con la estanteria buena (default %(default)s)')
+    ap.add_argument('--col-libreria-ia', default=COLS['libreria_ia'],
+                     help='columna con la estanteria que propuso el LLM (default %(default)s)')
+    ap.add_argument('--col-confianza-ia', default=COLS['confianza_ia'],
+                     help='columna con la confianza 0-100 del LLM (default %(default)s)')
+    ap.add_argument('--col-temas', default=COLS['temas'],
+                     help='columna de temas del motor local (default %(default)s)')
+    ap.add_argument('--col-temas-ia', default=COLS['temas_ia'],
+                     help='columna de temas del LLM (default %(default)s)')
+    ap.add_argument('--min-conf-ia', type=float, default=MIN_CONF_IA,
+                     help='confianza minima 0-100 para aceptar la estanteria del LLM '
+                          'como etiqueta cuando no hay una humana (default %(default)s); '
+                          'pon 101 para no usarlas nunca')
     args = ap.parse_args()
+    cols = {'libreria': args.col_libreria, 'libreria_ia': args.col_libreria_ia,
+            'confianza_ia': args.col_confianza_ia, 'temas': args.col_temas,
+            'temas_ia': args.col_temas_ia}
 
     try:
         import sklearn  # noqa: F401
     except ImportError:
         sys.exit("Falta scikit-learn. Instala con: pip install scikit-learn --break-system-packages")
 
-    rows = load_rows(args.datos)
-    examples, diag = build_examples(rows)
+    rows = load_rows(args.datos, cols)
+    examples, diag = build_examples(rows, cols, args.min_conf_ia)
     print()
-    print("Filas leidas (ficheros con #libreria): {}".format(diag['total']))
-    print("  sin #libreria: {}  |  '(revisar)'/vacia: {}  |  validas: {}".format(
+    print("Filas leidas: {}".format(diag['total']))
+    print("  sin estanteria: {}  |  '(revisar)'/vacia: {}  |  validas: {}".format(
         diag['sin_libreria'], diag['revisar'], diag['validas']))
+    print("  etiqueta de {}: {}  |  rescatadas de {} con confianza >= {:.0f}: {}".format(
+        args.col_libreria, diag['etiqueta_humana'], args.col_libreria_ia,
+        args.min_conf_ia, diag['etiqueta_ia']))
+    if diag['ia_sin_confianza']:
+        print("  descartadas por confianza baja de la IA: {}".format(
+            diag['ia_sin_confianza']))
     print("  duplicados fusionados: {}  |  conflictos descartados: {}".format(
         diag['duplicados_descartados'], diag['conflictos_descartados']))
-    print("Ejemplos unicos para entrenar: {}".format(len(examples)))
+    print("Ejemplos unicos para entrenar: {}  (con temas como senal: {})".format(
+        len(examples), diag['temas_usados']))
 
     if len(examples) < 10:
         sys.exit("\nMuy pocos ejemplos validos ({}) para entrenar nada util.".format(len(examples)))
 
-    counts = collections.Counter(lib for _, lib in examples)
+    counts = collections.Counter(lib for _, lib, _o in examples)
+    por_origen = collections.Counter(o for _t, _l, o in examples)
+    if por_origen.get('ia'):
+        print("\nOrigen de la etiqueta: {} humanas, {} de la IA ({:.0%} del total)".format(
+            por_origen.get('humana', 0), por_origen['ia'],
+            por_origen['ia'] / float(len(examples))))
     print("\nDistribucion por libreria:")
     for lib, n in counts.most_common():
         marca = '  <-- POCOS EJEMPLOS' if n < args.min_per_class else ''
@@ -377,26 +543,33 @@ def main():
             print("  - {}".format(l))
     unexpected = [l for l in counts if l not in EXPECTED_LIBRERIAS]
     if unexpected:
-        print("\nAVISO: valores de #libreria que no estan en la lista esperada (revisa si son typos):")
+        print("\nAVISO: valores de estanteria que no estan en el catalogo actual "
+              "(nombres viejos o typos; revisalos antes de adoptar el modelo):")
         for l in unexpected:
             print("  - {!r} ({})".format(l, counts[l]))
 
     if len(counts) < 2:
         sys.exit("\nSolo hay una libreria con ejemplos: no se puede entrenar un clasificador.")
 
-    texts = [t for t, _ in examples]
-    labels = [l for _, l in examples]
+    texts = [t for t, _l, _o in examples]
+    labels = [l for _t, l, _o in examples]
+    origins = [o for _t, _l, o in examples]
 
     if not all(c >= 2 for c in collections.Counter(labels).values()):
         print("\nAVISO: alguna libreria tiene menos de 2 ejemplos; el holdout de evaluacion "
               "no se estratifica (la metrica sera menos fiable para esas clases).")
 
-    holdout = train_holdout(texts, labels, args.min_df, args.test_size, args.seed, args.max_df)
+    holdout = train_holdout(texts, labels, args.min_df, args.test_size,
+                            args.seed, args.max_df, origins)
     print("\nVocabulario (holdout de evaluacion): {} n-gramas (min_df={})".format(
         holdout['vocab_size'], args.min_df))
     print("\n=== Evaluacion (holdout {:.0%}, SIN fuga: tags de Genero/Biblioteca excluidas) ===".format(
         args.test_size))
     print("Accuracy: {:.3f}  |  Macro-F1: {:.3f}".format(holdout['accuracy'], holdout['macro_f1']))
+    if holdout.get('accuracy_humana') is not None and por_origen.get('ia'):
+        print("Accuracy SOLO sobre etiquetas humanas ({} libros): {:.3f}  <- la metrica "
+              "honesta;\n  sobre las etiquetas de la IA se mide parecido con el LLM, "
+              "no acierto.".format(holdout['n_test_humana'], holdout['accuracy_humana']))
     print(holdout['report'])
 
     # Reentrena con TODO el dataset (train+test) para el modelo final exportado

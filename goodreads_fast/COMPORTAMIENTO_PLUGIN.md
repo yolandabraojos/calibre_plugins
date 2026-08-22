@@ -1,6 +1,6 @@
 # Goodreads Fast — Documentación de comportamiento del plugin
 
-**Versión:** 1.8.10 (nota: el `README.md` y la tabla de plugins en `CLAUDE.md`
+**Versión:** 1.8.14 (nota: el `README.md` y la tabla de plugins en `CLAUDE.md`
 dicen 1.6.0 — revisar cuál es la correcta antes de publicar; `__init__.py` es
 la fuente de verdad real).
 **Calibre mínimo:** 2.0.0
@@ -62,11 +62,37 @@ variantes EN ORDEN hasta encontrar un match fuerte, para maximizar el
 produce un candidato con `tsim >= 0.95` (o exacto) y `amatch >= 0.5`):
 
 1. **`_title_cores()`**: extrae hasta 3 candidatos de "núcleo de título" —
-   cabeza (antes de `:`/` - `), cola (después), y cualquier segmento
+   cabeza (antes del separador), cola (después), y cualquier segmento
    intermedio — porque un título mal cargado en Calibre puede llevar el
    prefijo de la saga ANTES del título real (`"Fate of Wizardoms -
    Wizardoms: Rise of a Wizard Queen"`), y no siempre es el primer segmento
    el que hay que buscar.
+
+   **Separadores reconocidos (`_SEGMENT_SPLIT_RE`, v1.8.14):** además de `:`
+   y ` - ` (guion con espacios), se reconocen las variantes típicas de un
+   título sacado de un nombre de fichero, donde `:` y el espacio no son
+   válidos: `:`/` - ` con guiones bajos alrededor (`"Blade_:_A ..."`,
+   `"Blade_-_A ..."`), una racha de **2 o más** `_` seguidos (`"Blade__A
+   ..."`), y `|`. Un `_` **suelto** NO cuenta como separador a propósito:
+   casi siempre sustituye a un espacio individual
+   (`"Blade_A_Bear_Shifter_Biker_Romance"` es UN título con espacios raros,
+   no seis palabras sueltas) y tratarlo como tal fragmentaría el título en
+   trozos de una palabra. Se limpia más abajo (se convierte en espacio) igual
+   que el resto de puntuación. Mismo regex compartido por
+   `_cand_title_variants()`, para que el filtro de reclamo de género (más
+   abajo) reconozca la cola también en los títulos de los candidatos si
+   alguna vez vinieran así.
+
+   **Excepción (v1.8.13):** un segmento que NO es la cabeza y que es un
+   *reclamo de género* — `_is_boilerplate_segment()` — no se usa como núcleo
+   independiente. Son los subtítulos comerciales que Amazon/KDP pegan a los
+   libros (`"A Reverse Harem Dragon Shifter Romance"`, `"A Bear Shifter Biker
+   Romance"`), compartidos por cientos de títulos distintos. Se reconocen por
+   la forma, no por una lista de frases: `<artículo> … <sustantivo de género>`
+   (romance, novel, thriller, story, saga, memoir…), o sin artículo si además
+   llevan dentro alguna etiqueta comercial (`shifter`, `harem`, `mafia`,
+   `billionaire`…). El título completo se conserva siempre; y si el título
+   ENTERO es un reclamo así, se busca igual, porque no hay otra cosa.
 2. **`_author_variants()`**: autor primario primero, luego cada coautor por
    separado — así un libro con varios autores se encuentra aunque Goodreads
    solo tenga catalogado a uno de ellos.
@@ -120,6 +146,25 @@ produce un candidato con `tsim >= 0.95` (o exacto) y `amatch >= 0.5`):
 
 ---
 
+### 4.1. Por qué el reclamo de género importa tanto aquí
+
+La puerta de aceptación deja pasar **cualquier** coincidencia exacta de título
+sin mirar el autor (decisión deliberada: seudónimos y coautorías). Eso, sumado
+a un núcleo de búsqueda que fuese un reclamo de género, producía resultados
+directamente inventados: para `"Bonded to her Royal Mates: A Reverse Harem
+Dragon Shifter Romance"` de Claire Heat — un libro que **no está en
+Goodreads** — el núcleo `"A Reverse Harem Dragon Shifter Romance"` casaba
+`exact`/`tsim=1.00` contra tres libros de Misty Malloy, los tres empatados a
+`18.00` (el bonus de popularidad está topado en 2.0, así que 138, 173 y 309
+votos puntúan igual) y el empate lo rompía el orden de inserción. Con el
+filtro de la §3 esos tres candidatos ya no llegan a puntuarse y la respuesta
+es "no match", que es la correcta.
+
+Hay test de regresión de punta a punta en
+`tests/test_goodreads_fast.py::TestRankCandidates`.
+
+---
+
 ## 5. Pin por ISBN (con guarda)
 
 Si la consulta trae ISBN, se busca también por ese ISBN. El resultado
@@ -162,11 +207,41 @@ después de descargar, no antes.
 Cada `Worker` es un hilo que descarga `.../book/show/<id>.xml` — la URL con
 extensión `.xml` en vez de la página normal, porque la página sin extensión
 está detrás de un WAF de AWS, y la `.xml` sirve la MISMA página Next.js con
-el JSON `__NEXT_DATA__` que se necesita parsear.
+el JSON `__NEXT_DATA__` que se necesita parsear. Ese truco ya no es fiable al
+100 %: el WAF también rechaza la `.xml` de vez en cuando (503 en ~0,3 s), de
+ahí la alternancia de URL descrita abajo.
 
-- **Reintentos**: hasta 3 intentos si Goodreads devuelve una respuesta sin el
-  book JSON (503 / respuesta parcial), con un backoff corto (0.5 s, luego
-  1.0 s) — no antes del primer intento.
+- **Reintentos** (v1.8.11): hasta 4 intentos, con backoff 1 s / 2 s / 4 s (no
+  antes del primero), en dos casos:
+  1. la respuesta llega sin el book JSON (respuesta parcial), y
+  2. Goodreads devuelve un código HTTP transitorio —
+     `TRANSIENT_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}`.
+
+  El caso 2 **no reintentaba antes de la v1.8.11**: `get_details()` devolvía
+  `False` en la rama de excepción y `False` corta el bucle, así que un 503 del
+  WAF acababa como "No matches found" en el intento #1 pese a que el comentario
+  del bucle decía lo contrario. Un `404` y un *timeout* siguen abortando sin
+  reintentar, que es lo correcto.
+- **Alternancia de URL** (v1.8.11): `_other_url_flavour()` conmuta entre
+  `/book/show/<id>.xml` y `/book/show/<id>` antes de cada reintento. El WAF de
+  AWS acepta o rechaza cada variante por separado y de forma errática, así que
+  cuando una da 503 la otra suele responder.
+- **Sinopsis prestada de otra edición** (v1.8.12): Goodreads guarda la sinopsis
+  por EDICIÓN, no por obra, y es muy frecuente que la ficha con más votos —la
+  que gana el ranking— tenga literalmente `"Coming soon..."`. Cuando la ficha
+  descargada no trae una descripción real (`_is_real_description()`: vacía, un
+  marcador tipo *Coming soon* / *To be announced*, o menos de 60 caracteres de
+  texto plano), se lee la lista de ediciones de la obra
+  (`Work.editions.webUrl`, o `/work/editions/<legacyId>`) y se descarga la
+  sinopsis de hasta 3 ediciones hermanas hasta encontrar una buena. Se
+  descartan las ediciones cuyo *Edition language* no coincide con el idioma ya
+  parseado de la nuestra, para no acabar con la sinopsis en alemán de un libro
+  en inglés. **Solo se toma prestada la sinopsis**: el resto de metadatos
+  (título, serie, ISBN, fecha, portada) sigue viniendo de la ficha elegida, que
+  suele ser la que tiene la serie bien puesta. Caso que motivó el cambio:
+  *Blade* de Eva Kent, obra `110186032` — la ficha `85746064` (Kindle, 268
+  votos) dice "Coming soon..." y la `138295429` (Paperback) trae la sinopsis
+  completa.
 - **Detección de página de error**: si el `<title>` es una página de
   resultados de búsqueda o un 404, aborta ese candidato sin reintentar como
   si fuera un fallo transitorio.

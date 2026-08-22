@@ -878,6 +878,34 @@ class TestQRevisar2CorrectionRound(unittest.TestCase):
             ft.make_clean_title('Swordfall: Fall Trilogy Two', series=s, index=i),
             'Swordfall')
 
+    def test_title_colon_series_bare_word_number_with_comma(self):
+        # "Titulo: Serie, N" -- la coma antes del numero NO debe quedar
+        # pegada al nombre de la serie (bug encontrado en un libro real:
+        # "Claimings," en vez de "Claimings").
+        self.assertEqual(
+            self._series('Swordfall: Fall Trilogy, Two'),
+            ('Fall Trilogy', 2.0, None))
+
+    def test_title_colon_series_hash_with_comma(self):
+        # "Titulo: Serie, #N" -- mismo bug que el anterior pero con "#N".
+        # Caso real: "Assimilation, Love, and Other Human Oddities:
+        # Claimings, #2".
+        self.assertEqual(
+            self._series(
+                'Assimilation, Love, and Other Human Oddities: '
+                'Claimings, #2'),
+            ('Claimings', 2.0, None))
+
+    def test_title_colon_series_hash_with_comma_clean(self):
+        s, i, _ = self._series(
+            'Assimilation, Love, and Other Human Oddities: Claimings, #2')
+        self.assertEqual(
+            ft.make_clean_title(
+                'Assimilation, Love, and Other Human Oddities: '
+                'Claimings, #2',
+                series=s, index=i),
+            'Assimilation, Love, and Other Human Oddities')
+
     def test_colon_series_book_n_with_trailing_subtitle(self):
         # "Titulo: Serie Book N: Subtitulo" -- el N ya no exige fin de cadena.
         self.assertEqual(
@@ -989,6 +1017,47 @@ class TestSerieGen(unittest.TestCase):
             ft.find_generic_series_in_title(
                 'Whatever He Wants: The Complete Series '
                 '(An Alpha Billionaire Romance)'))
+
+    def test_translated_by_byline_not_claimed(self):
+        # "(Translated by X)" no es una etiqueta de universo/imprint, es un
+        # credito de traduccion -- bug real reportado por Yolanda: se estaba
+        # borrando cualquier parentesis final sin numero, incluidos estos.
+        self.assertIsNone(
+            ft.find_generic_series_in_title(
+                'War and Peace (Translated by Louise and Aylmer Maude)'))
+
+    def test_read_by_byline_not_claimed(self):
+        self.assertIsNone(
+            ft.find_generic_series_in_title(
+                'A Christmas Carol (Read by Tim Curry)'))
+
+    def test_unabridged_not_claimed(self):
+        self.assertIsNone(
+            ft.find_generic_series_in_title('Moby Dick (Unabridged)'))
+
+    def test_annotated_not_claimed(self):
+        self.assertIsNone(
+            ft.find_generic_series_in_title('Pride and Prejudice (Annotated)'))
+
+    def test_large_print_not_claimed(self):
+        self.assertIsNone(
+            ft.find_generic_series_in_title('The Hobbit (Large Print)'))
+
+    def test_with_new_introduction_not_claimed(self):
+        self.assertIsNone(
+            ft.find_generic_series_in_title(
+                'Some Book (With a New Introduction)'))
+        self.assertIsNone(
+            ft.find_generic_series_in_title(
+                'Some Book (With a New Introduction by John Smith)'))
+
+    def test_real_universe_tag_still_claimed(self):
+        # Los casos reales de Serie_Gen (Ronda 2) siguen funcionando tras
+        # anadir las exclusiones de byline/formato de arriba.
+        self.assertEqual(
+            ft.find_generic_series_in_title(
+                'The Library: Where Life Checks Out (American Haunts)'),
+            'American Haunts')
 
     def test_complete_series_paren_not_claimed(self):
         self.assertIsNone(

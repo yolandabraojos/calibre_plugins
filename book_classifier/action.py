@@ -9,13 +9,15 @@ from calibre.gui2.actions import InterfaceAction
 from calibre.gui2 import Dispatcher, error_dialog, question_dialog
 from qt.core import QIcon, QMenu, QAction, QPixmap, Qt
 
-from calibre_plugins.book_classifier.config import prefs
+from calibre_plugins.book_classifier.config import (
+    prefs, list_profiles, get_active_profile_name, apply_profile)
 from calibre_plugins.book_classifier.ml_jobs import (
     plan_classify_chunks, run_classify_chunk_task, run_author_fallback_task,
     apply_ml_writes)
 from calibre.gui2.threaded_jobs import ThreadedJob
 from calibre_plugins.book_classifier.llm_jobs import (
-    select_rescue_candidates, plan_rescue_chunks, run_rescue_batch_task)
+    select_rescue_candidates, plan_rescue_chunks, run_rescue_batch_task,
+    build_donor_index, resolve_from_index)
 
 try:
     from calibre_plugins.book_classifier import get_icons
@@ -59,6 +61,12 @@ class BookClassifierAction(InterfaceAction):
 
         menu.addSeparator()
 
+        act_coher = QAction('Revisar coherencia entre copias...', self.gui)
+        act_coher.triggered.connect(self._method_coherence)
+        menu.addAction(act_coher)
+
+        menu.addSeparator()
+
         sub_clear = QMenu('Limpiar clasificaciones del plugin', self.gui)
         act_clear_sel = QAction('Libros seleccionados', self.gui)
         act_clear_all = QAction('Toda la biblioteca', self.gui)
@@ -70,12 +78,52 @@ class BookClassifierAction(InterfaceAction):
 
         menu.addSeparator()
 
+        # Cambia el perfil de IA (proveedor/clave/modelo/URL) activo sin
+        # abrir el dialogo de configuracion. El submenu se reconstruye cada
+        # vez que se abre para reflejar altas/bajas/cambios hechos en el
+        # dialogo desde la ultima vez.
+        self.sub_llm_profiles = QMenu('Perfil de IA activo', self.gui)
+        menu.addMenu(self.sub_llm_profiles)
+        menu.aboutToShow.connect(self._refresh_llm_profile_menu)
+
+        menu.addSeparator()
+
         act_config = QAction('Configurar plugin...', self.gui)
         act_config.triggered.connect(self.show_config)
         menu.addAction(act_config)
 
         self.qaction.triggered.connect(lambda: self._method_ml(all_books=False))
         print("DEBUG: Plugin Book Classifier (IA) listo.")
+
+    # ─── Perfiles de IA ──────────────────────────────────────────────────────
+
+    def _refresh_llm_profile_menu(self):
+        self.sub_llm_profiles.clear()
+        try:
+            profiles = list_profiles()
+            active = get_active_profile_name()
+        except Exception:
+            profiles, active = [], ''
+        if not profiles:
+            act = QAction('(sin perfiles guardados)', self.gui)
+            act.setEnabled(False)
+            self.sub_llm_profiles.addAction(act)
+            return
+        for p in profiles:
+            pname = p.get('name', '')
+            label = pname
+            if p.get('model'):
+                label = '{}  [{}]'.format(pname, p['model'])
+            act = QAction(label, self.gui)
+            act.setCheckable(True)
+            act.setChecked(pname == active)
+            act.triggered.connect(lambda checked, n=pname: self._switch_llm_profile(n))
+            self.sub_llm_profiles.addAction(act)
+
+    def _switch_llm_profile(self, name):
+        if apply_profile(name):
+            self.gui.status_bar.show_message(
+                'Perfil de IA activo: {}'.format(name), 4000)
 
     # ─── Selección ────────────────────────────────────────────────────────────
 
@@ -134,6 +182,11 @@ class BookClassifierAction(InterfaceAction):
                 'llm_conf_field':      prefs.get('llm_conf_field', '#confianza_ia'),
                 'llm_promote_enabled':   prefs.get('llm_promote_enabled', True),
                 'llm_promote_threshold': prefs.get('llm_promote_threshold', 0.90),
+                # Promocion del OTRO eje: los temas de la IA sustituyen a los
+                # del motor local (solo se LEE su campo, nunca se escribe).
+                'llm_temas_field':   prefs.get('llm_temas_field', '#temas_ia'),
+                'llm_temas_prefix':  prefs.get('llm_temas_prefix', 'Tema IA: '),
+                'llm_promote_temas_enabled': prefs.get('llm_promote_temas_enabled', True),
             }
 
             missing = self._check_missing_fields(settings)
@@ -164,6 +217,8 @@ class BookClassifierAction(InterfaceAction):
                 'pending': len(chunks), 'book_ids': list(book_ids), 'settings': settings,
                 'total': 0, 'classified': 0, 'errors': 0, 'dist': {},
                 'group_count': 0, 'unified_books': 0, 'author_resolved': 0,
+                'temas_promovidos': 0,
+                'promocion_nombre_invalido': 0, 'promocion_nombres': {},
                 'book_details': [], 'failed_chunks': [],
                 'first_error': '', 'error_samples': [],
             }
@@ -207,6 +262,9 @@ class BookClassifierAction(InterfaceAction):
         if settings.get('llm_promote_enabled'):
             checks.append((settings.get('llm_library_field'), 'libreria IA (promocion)'))
             checks.append((settings.get('llm_conf_field'), 'confianza IA (promocion)'))
+        if settings.get('llm_promote_temas_enabled'):
+            checks.append((settings.get('llm_temas_field'), 'temas IA (promocion)'))
+            checks.append((settings.get('llm_conf_field'), 'confianza IA (promocion)'))
         missing = []
         seen = set()
         for field, uso in checks:
@@ -243,6 +301,14 @@ class BookClassifierAction(InterfaceAction):
                     run['errors']        += result.get('errors', 0)
                     run['group_count']   += result.get('group_count', 0)
                     run['unified_books'] += result.get('unified_books', 0)
+                    run['temas_promovidos'] = run.get('temas_promovidos', 0) \
+                        + result.get('temas_promovidos', 0)
+                    run['promocion_nombre_invalido'] = \
+                        run.get('promocion_nombre_invalido', 0) \
+                        + result.get('promocion_nombre_invalido', 0)
+                    for k, v in (result.get('promocion_nombres') or {}).items():
+                        run['promocion_nombres'][k] = \
+                            run['promocion_nombres'].get(k, 0) + v
                     for k, v in result.get('dist', {}).items():
                         run['dist'][k] = run['dist'].get(k, 0) + v
                     room = 400 - len(run['book_details'])
@@ -327,6 +393,22 @@ class BookClassifierAction(InterfaceAction):
                 'Grupos unificados: {}  ({} libros heredaron la librería del grupo)'.format(
                     stats.get('group_count', 0), stats.get('unified_books', 0)),
                 'Resueltos por autor: {}'.format(stats.get('author_resolved', 0)),
+            ]
+            if stats.get('temas_promovidos'):
+                lines.append(
+                    'Temas tomados de la IA: {} (sustituyen a los detectados por '
+                    'regex en esos libros)'.format(stats['temas_promovidos']))
+            if stats.get('promocion_nombre_invalido'):
+                malos = stats.get('promocion_nombres') or {}
+                top = sorted(malos, key=lambda k: -malos[k])[:4]
+                lines.append(
+                    'Promociones rechazadas: {} (la libreria guardada por la IA ya '
+                    'no esta en el catalogo{}). Vuelve a pasar el rescate con IA '
+                    'por esos libros.'.format(
+                        stats['promocion_nombre_invalido'],
+                        ': ' + ', '.join('"{}" x{}'.format(n, malos[n]) for n in top)
+                        if top else ''))
+            lines += [
                 '',
                 'Reparto por librería:',
             ]
@@ -397,6 +479,9 @@ class BookClassifierAction(InterfaceAction):
         # llm_jobs.run_rescue_batch_task): hace falta su valor previo para que
         # el merge no pierda datos si overwrite=False.
         llm_lib_field = settings.get('llm_library_field') or ''
+        # Campo PROPIO de los temas de la IA (3.9.0): tambien hace falta su
+        # valor previo para que el merge no pierda datos.
+        llm_temas_field = (settings.get('llm_temas_field') or '').strip()
         books = []
         for bid in book_ids:
             try:
@@ -430,11 +515,319 @@ class BookClassifierAction(InterfaceAction):
             prev = {lib_field: _fval(lib_field), mood_field: _fval(mood_field)}
             if llm_lib_field:
                 prev[llm_lib_field] = _fval(llm_lib_field)
+            if llm_temas_field and llm_temas_field not in prev:
+                prev[llm_temas_field] = _fval(llm_temas_field)
             idioma = ','.join(sorted(str(x) for x in languages))
             books.append({'id': bid, 'title': title, 'authors': authors,
                           'comments': comments, 'tags': tags, 'idioma': idioma,
                           'lib_value': lib_value, 'prev': prev})
         return books
+
+    def _prefetch_donor_index(self, settings):
+        """Indice de donantes a partir de las filas de la biblioteca."""
+        return build_donor_index(self._prefetch_library_rows(settings))
+
+    def _prefetch_library_rows(self, settings):
+        """Lee TODA la biblioteca -en el hilo de la GUI, como _prefetch_books-
+        para saber que titulo+autor YA tiene libreria y no volver a
+        preguntarselo al LLM. Las mismas filas alimentan el informe de
+        coherencia entre copias (coherence.py).
+
+        Lectura EN LOTE con `all_field_for` (un diccionario por campo), no
+        libro a libro: con `field_for` por libro esto tardaria mas que el
+        propio rescate. Si la API no lo soporta, se cae a field_for.
+
+        Donantes de dos origenes, con distinta consecuencia:
+          - `llm_library_field`: es la respuesta previa de la IA; se copia con
+            su % de confianza, su motivo y su serie.
+          - `library_field` (clasificador local): tambien vale como respuesta,
+            pero se copia SIN confianza a proposito. El nivel de promocion de
+            ml_jobs solo asciende un valor de la IA si su confianza supera el
+            umbral, asi que sin confianza no puede cerrarse el bucle
+            local -> campo IA -> promocion al campo local.
+        """
+        db = self.gui.current_db.new_api
+        lib_field   = settings.get('library_field', 'tags')
+        mood_field  = settings.get('mood_field', 'tags')
+        lib_prefix  = settings.get('library_prefix', 'Biblioteca: ')
+        mood_prefix = settings.get('mood_prefix', 'Tema: ')
+        llm_field   = (settings.get('llm_library_field') or '').strip()
+        llm_prefix  = settings.get('llm_library_prefix', 'Biblioteca IA: ')
+        conf_field  = ((settings.get('llm_conf_field') or '').strip()
+                       if settings.get('llm_write_conf', True) else '')
+        serie_field = ((settings.get('llm_serie_field') or '').strip()
+                       if settings.get('llm_write_serie', True) else '')
+        reason_field = ((settings.get('llm_reason_field') or '').strip()
+                        if settings.get('llm_write_reason', True) else '')
+        try:
+            valid = set(db.field_metadata.all_field_keys())
+            ids = list(db.all_book_ids())
+        except Exception:
+            traceback.print_exc()
+            return {}
+        if not ids:
+            return {}
+
+        cache = {}
+
+        def bulk(field):
+            if not field or field not in valid:
+                return {}
+            if field in cache:
+                return cache[field]
+            try:
+                vals = dict(db.all_field_for(field, ids))
+            except Exception:
+                vals = {}
+                for bid in ids:
+                    try:
+                        vals[bid] = db.field_for(field, bid)
+                    except Exception:
+                        pass
+            cache[field] = vals
+            return vals
+
+        titles  = bulk('title')
+        authors = bulk('authors')
+        langs   = bulk('languages')
+        v_llm   = bulk(llm_field) if llm_field else {}
+        v_ml    = bulk(lib_field)
+        v_mood  = bulk(mood_field)
+        v_conf  = bulk(conf_field) if conf_field else {}
+        v_serie = bulk(serie_field) if serie_field else {}
+        v_reason = bulk(reason_field) if reason_field else {}
+
+        def one(vals, field, prefix, bid):
+            """Valor SIN prefijo (el que se vuelve a escribir lo re-anade)."""
+            v = vals.get(bid)
+            if field != 'tags' and not prefix and isinstance(v, (list, tuple)):
+                # Columna PROPIA multivalor: sin prefijo porque todo lo que hay
+                # es del plugin. Buscar una marca aqui devolvia None y el
+                # indice de donantes se quedaba sin el dato.
+                return next((str(t).strip() for t in (v or []) if str(t).strip()), None)
+            if field == 'tags' or isinstance(v, (list, tuple)):
+                for t in (v or []):
+                    t = str(t)
+                    if prefix and t.startswith(prefix):
+                        return t[len(prefix):].strip()
+                return None
+            if v is None:
+                return None
+            v = str(v).strip()
+            return v or None
+
+        def many(vals, field, prefix, bid):
+            v = vals.get(bid)
+            if field != 'tags' and not prefix and isinstance(v, (list, tuple)):
+                # Idem que en one(): columna propia -> valen todos los valores.
+                # Devolver [] dejaba SIN TEMAS a las copias resueltas por el
+                # indice cuando el campo de temas no es 'tags'.
+                return [str(t).strip() for t in (v or []) if str(t).strip()]
+            if field == 'tags' or isinstance(v, (list, tuple)):
+                if not prefix:
+                    return []
+                return [str(t)[len(prefix):].strip() for t in (v or [])
+                        if str(t).startswith(prefix)]
+            return [str(v).strip()] if v else []
+
+        llm_prefix_eff  = llm_prefix if llm_field == 'tags' else ''
+        lib_prefix_eff  = lib_prefix if lib_field == 'tags' else ''
+        mood_prefix_eff = mood_prefix if mood_field == 'tags' else ''
+
+        rows = []
+        for bid in ids:
+            de_ia = True
+            lib = one(v_llm, llm_field, llm_prefix_eff, bid) if llm_field else None
+            if not lib:
+                de_ia = False
+                lib = one(v_ml, lib_field, lib_prefix_eff, bid)
+            temas = many(v_mood, mood_field, mood_prefix_eff, bid)
+            if not lib and not temas:
+                continue
+            conf = None
+            if de_ia and conf_field:
+                try:
+                    raw = v_conf.get(bid)
+                    conf = int(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    conf = None
+            langv = langs.get(bid) or []
+            rows.append({
+                'id': bid,
+                'title': titles.get(bid) or '',
+                'authors': list(authors.get(bid) or []),
+                'idioma': ','.join(sorted(str(x) for x in langv)),
+                'libreria': lib,
+                'temas': temas,
+                'origen': 'ia' if (lib and de_ia) else 'local',
+                'conf_pct': conf,
+                'serie': (one(v_serie, serie_field, '', bid)
+                          if (de_ia and serie_field) else None),
+                # El razonamiento original solo tiene sentido si el donante
+                # viene de la IA: el clasificador local no escribe motivo.
+                # resolve_from_index lo copia junto con la clasificacion
+                # cuando otra copia se resuelve por este indice.
+                'motivo': (one(v_reason, reason_field, '', bid)
+                           if (de_ia and reason_field) else None),
+            })
+        return rows
+
+    # --- Coherencia entre copias -----------------------------------------
+
+    def _method_coherence(self):
+        """Informe de copias del mismo titulo+autor con clasificaciones que se
+        contradicen. Solo LEE: nada se escribe salvo que se pulse el boton de
+        unificar temas."""
+        from calibre_plugins.book_classifier import coherence
+        try:
+            settings = {
+                'library_field':  prefs.get('ml_library_field', 'tags'),
+                'mood_field':     prefs.get('ml_mood_field', 'tags'),
+                'library_prefix': prefs.get('ml_library_prefix', 'Biblioteca: '),
+                'mood_prefix':    prefs.get('ml_mood_prefix', 'Tema: '),
+                'llm_library_field':  prefs.get('llm_library_field', '#libreria_ia'),
+                'llm_library_prefix': prefs.get('llm_library_prefix', 'Biblioteca IA: '),
+                'llm_conf_field':  prefs.get('llm_conf_field', '#confianza_ia'),
+                'llm_serie_field': prefs.get('llm_serie_field', '#serie_ia'),
+                'llm_write_conf':  prefs.get('llm_write_conf', True),
+                'llm_write_serie': prefs.get('llm_write_serie', True),
+            }
+            rows = self._prefetch_library_rows(settings)
+            if not rows:
+                error_dialog(self.gui, 'Nada que revisar',
+                             'No hay ningun libro con libreria o temas del '
+                             'plugin en esta biblioteca.', show=True)
+                return
+            rep = coherence.analyze(rows)
+            try:
+                lib_name = self.gui.current_db.library_path
+            except Exception:
+                lib_name = ''
+            html = coherence.render_html(rep, biblioteca=lib_name)
+            self._show_coherence_results(rep, html, settings)
+        except Exception:
+            print("DEBUG ERROR en _method_coherence:")
+            traceback.print_exc()
+            error_dialog(self.gui, 'Error',
+                         'No se pudo generar el informe de coherencia. Mira la '
+                         'consola de calibre para el detalle.', show=True)
+
+    def _show_coherence_results(self, rep, html, settings):
+        from qt.core import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                             QPushButton, QDialogButtonBox, Qt)
+        from calibre_plugins.book_classifier import coherence
+
+        dialog = QDialog(self.gui)
+        dialog.setWindowTitle('Coherencia entre copias')
+        layout = QVBoxLayout(dialog)
+        n_uni = len(coherence.unify_moods_writes(rep['mood_incomplete']))
+        lbl = QLabel(
+            'Libros analizados:            {}\n'
+            'Titulos con mas de una copia: {}\n\n'
+            'Contradicciones de libreria:  {}   (una de las copias esta mal)\n'
+            'Contradicciones de temas:     {}   (conjuntos incompatibles)\n'
+            'Grupos con temas incompletos: {}   ({} copias se pueden unificar)\n'
+            'Clasificados sin ningun tema: {}'.format(
+                rep['total_books'], rep['total_groups'],
+                len(rep['lib_conflicts']), len(rep['mood_conflicts']),
+                len(rep['mood_incomplete']), n_uni, rep['no_moods_total']))
+        lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(lbl)
+
+        nota = QLabel(
+            'Las contradicciones hay que resolverlas a mano: el informe trae '
+            'una busqueda "id:..." por grupo para verlas en calibre. Los temas '
+            'incompletos no requieren decidir nada -unos son subconjunto de '
+            'otros-, asi que se pueden unificar con la union de golpe.')
+        nota.setWordWrap(True)
+        layout.addWidget(nota)
+
+        row = QHBoxLayout()
+        btn_html = QPushButton('Ver informe completo')
+        btn_html.clicked.connect(lambda: self._open_coherence_report(html))
+        row.addWidget(btn_html)
+        btn_uni = QPushButton('Unificar temas incompletos ({})'.format(n_uni))
+        btn_uni.setEnabled(bool(n_uni))
+        btn_uni.clicked.connect(
+            lambda: self._unify_moods(rep['mood_incomplete'], settings, btn_uni))
+        row.addWidget(btn_uni)
+        layout.addLayout(row)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(dialog.reject)
+        btns.accepted.connect(dialog.accept)
+        layout.addWidget(btns)
+        dialog.resize(600, 330)
+        dialog.exec()
+
+    def _open_coherence_report(self, html):
+        try:
+            from calibre.ptempfile import PersistentTemporaryFile
+            from calibre.gui2 import open_local_file
+            tf = PersistentTemporaryFile('_coherencia.html')
+            tf.write(html.encode('utf-8'))
+            tf.close()
+            open_local_file(tf.name)
+        except Exception:
+            print("DEBUG ERROR al abrir el informe de coherencia:")
+            traceback.print_exc()
+
+    def _unify_moods(self, entries, settings, button=None):
+        """Aplica la UNION de temas a los grupos incompletos. Solo toca los
+        casos en que unos temas son subconjunto de otros: no decide nada."""
+        from calibre_plugins.book_classifier import coherence
+        from calibre_plugins.book_classifier.ml_jobs import _merge_prefixed
+        try:
+            pend = coherence.unify_moods_writes(entries)
+            if not pend:
+                return
+            if not question_dialog(
+                    self.gui, 'Confirmar',
+                    'Se van a unificar los temas de {} libros con la union de '
+                    'los temas de sus copias. Los demas campos no se tocan. '
+                    '¿Continuar?'.format(len(pend))):
+                return
+            db = self.gui.current_db.new_api
+            mood_field = settings.get('mood_field', 'tags')
+            mood_prefix = settings.get('mood_prefix', 'Tema: ')
+            pref_eff = mood_prefix if mood_field == 'tags' else ''
+            writes = {}
+            for bid, temas in pend.items():
+                try:
+                    prev = db.field_for(mood_field, bid)
+                except Exception:
+                    prev = None
+                writes[bid] = _merge_prefixed(
+                    [pref_eff + t for t in temas], prev, mood_field,
+                    [pref_eff], True)
+            apply_ml_writes(self.gui, {mood_field: writes})
+            if button is not None:
+                button.setEnabled(False)
+                button.setText('Unificados {}'.format(len(writes)))
+        except Exception:
+            print("DEBUG ERROR en _unify_moods:")
+            traceback.print_exc()
+
+    def _apply_llm_writes(self, result, settings):
+        """Aplica a la BD las escrituras de un resultado de rescate -venga del
+        job del LLM o de la resolucion por indice-."""
+        if result.get('writes_by_field'):
+            apply_ml_writes(self.gui, result['writes_by_field'])
+        reason_field = (settings.get('llm_reason_field')
+                        if settings.get('llm_write_reason', True) else None)
+        if result.get('reason_writes') and reason_field:
+            self._apply_reason_writes(reason_field, result['reason_writes'])
+        serie_field = (settings.get('llm_serie_field')
+                       if settings.get('llm_write_serie', True) else None)
+        if result.get('serie_writes') and serie_field:
+            self._apply_custom_writes(serie_field, result['serie_writes'],
+                                      'la serie detectada por la IA', 'texto')
+        conf_field = (settings.get('llm_conf_field')
+                      if settings.get('llm_write_conf', True) else None)
+        if result.get('conf_writes') and conf_field:
+            self._apply_custom_writes(conf_field, result['conf_writes'],
+                                      'el % de confianza de la IA',
+                                      'entero (numero)')
 
     def _run_llm_rescue(self, book_ids, force=False):
         try:
@@ -455,7 +848,9 @@ class BookClassifierAction(InterfaceAction):
                 'llm_provider':   provider,
                 'llm_api_key':    key,
                 'llm_model':      prefs.get('llm_model', ''),
-                'llm_batch':      prefs.get('llm_batch', 10),
+                'llm_base_url':   prefs.get('llm_base_url', ''),
+                'llm_batch':      prefs.get('llm_batch', 20),
+                'llm_batch_tolerancia': prefs.get('llm_batch_tolerancia', 0.25),
                 'llm_min_conf':   prefs.get('llm_min_conf', 0.55),
                 'llm_write_temas': prefs.get('llm_write_temas', True),
                 'llm_write_reason': prefs.get('llm_write_reason', True),
@@ -468,38 +863,71 @@ class BookClassifierAction(InterfaceAction):
                 # 'library_field', el campo principal de la clasificacion local).
                 'llm_library_field':  prefs.get('llm_library_field', '#libreria_ia'),
                 'llm_library_prefix': prefs.get('llm_library_prefix', 'Biblioteca IA: '),
+                # Idem para los TEMAS: columna propia, separada de la del motor
+                # local ('mood_field'). Vacia = comportamiento anterior.
+                'llm_temas_field':  prefs.get('llm_temas_field', '#temas_ia'),
+                'llm_temas_prefix': prefs.get('llm_temas_prefix', 'Tema IA: '),
                 'force_all':       force,
             }
 
-            llm_lib_field = settings.get('llm_library_field')
-            if llm_lib_field and llm_lib_field != 'tags':
-                try:
-                    valid = set(self.gui.current_db.new_api.field_metadata.all_field_keys())
-                except Exception:
-                    valid = None
-                if valid is not None and llm_lib_field not in valid:
+            # Columnas PROPIAS del rescate: deben existir ANTES de gastar
+            # llamadas a la IA, o el resultado se perderia al escribir.
+            a_comprobar = [(settings.get('llm_library_field'),
+                            'la libreria detectada por la IA')]
+            if settings.get('llm_write_temas', True):
+                a_comprobar.append((settings.get('llm_temas_field'),
+                                    'los temas detectados por la IA'))
+            try:
+                valid = set(self.gui.current_db.new_api.field_metadata.all_field_keys())
+            except Exception:
+                valid = None
+            for campo, uso in a_comprobar:
+                campo = (campo or '').strip()
+                if not campo or campo == 'tags' or valid is None:
+                    continue
+                if campo not in valid:
                     error_dialog(
                         self.gui, 'Columna no encontrada',
-                        'La columna configurada para la libreria detectada por la '
-                        'IA ({}) no existe en esta biblioteca.\n\nCreala '
-                        '(Preferencias -> Anadir columnas personalizadas) o '
-                        'corrige la configuracion del plugin antes de '
-                        'rescatar.'.format(llm_lib_field), show=True)
+                        'La columna configurada para {} ({}) no existe en esta '
+                        'biblioteca.\n\nCreala (Preferencias -> Anadir columnas '
+                        'personalizadas) o corrige la configuracion del plugin '
+                        'antes de rescatar.'.format(uso, campo), show=True)
                     return
 
             books = self._prefetch_books(book_ids, settings)
 
             # Filtra los candidatos ANTES de lanzar nada (rapido, sin red) y
             # reparte el rescate en VARIOS jobs (en vez de uno solo con todos
-            # los libros): cada job hace 1-2 llamadas a la IA y aplica sus
+            # los libros): cada job es UNA llamada a la IA y aplica sus
             # cambios en cuanto termina, sin esperar a que acabe el resto.
             cand, diag = select_rescue_candidates(books, settings)
 
+            # Antes de gastar una sola llamada: los candidatos cuyo titulo y
+            # autor YA estan clasificados en esta biblioteca -otra copia del
+            # mismo libro- se resuelven copiando esa respuesta. El indice solo
+            # se construye si queda algo que preguntar.
+            donors = self._prefetch_donor_index(settings) if cand else {}
+            cand, idx_res = resolve_from_index(cand, donors, settings)
+            from_index = idx_res.get('from_index', 0)
+            if from_index:
+                self._apply_llm_writes(idx_res, settings)
+
             if not cand:
                 self._show_llm_results({
-                    'candidates': 0, 'total': len(books), 'cancelled': False,
+                    'candidates': from_index, 'total': len(books),
+                    'cancelled': False,
                     'lib_field': settings.get('library_field', 'tags'),
                     'with_value': diag['with_value'], 'sample': diag['sample'],
+                    'already_llm': diag.get('already_llm', 0),
+                    'temas_sin_libreria': idx_res.get('temas_sin_libreria', 0),
+                    'from_index': from_index,
+                    'from_index_loose': idx_res.get('from_index_loose', 0),
+                    'rescued': idx_res.get('rescued', 0),
+                    'dist': dict(idx_res.get('dist', {})),
+                    'book_details': list(idx_res.get('book_details', [])),
+                    'provider': provider,
+                    'model_used': '(no hizo falta llamar al modelo)',
+                    'base_used': '-',
                 })
                 return
 
@@ -514,8 +942,17 @@ class BookClassifierAction(InterfaceAction):
 
             self._llm_run = {
                 'pending': len(chunks), 'settings': settings,
-                'total': len(books), 'candidates': len(cand),
-                'rescued': 0, 'errors': 0, 'dist': {}, 'book_details': [],
+                'total': len(books), 'candidates': len(cand) + from_index,
+                'rescued': idx_res.get('rescued', 0), 'errors': 0,
+                'dist': dict(idx_res.get('dist', {})),
+                'book_details': list(idx_res.get('book_details', []))[:400],
+                'from_index': from_index,
+                'from_index_loose': idx_res.get('from_index_loose', 0),
+                'already_llm': diag.get('already_llm', 0),
+                'temas_sin_libreria': idx_res.get('temas_sin_libreria', 0),
+                'revisar_causes': {}, 'unknown_names': {},
+                'tokens': {'in': 0, 'out': 0, 'cache': 0, 'llamadas': 0},
+                'min_conf': settings.get('llm_min_conf', 0.55),
                 'first_error': '', 'failed_chunks': [],
                 'provider': provider,
                 'model_used': settings.get('llm_model') or _dmodel,
@@ -541,7 +978,10 @@ class BookClassifierAction(InterfaceAction):
                         len(chunks), len(cand),
                         (' ({} copias duplicadas agrupadas, no se reenvian)'.format(
                             diag.get('duplicates_saved', 0))
-                         if diag.get('duplicates_saved') else '')), 6000)
+                         if diag.get('duplicates_saved') else '')
+                        + (' ({} resueltos sin preguntar, ya clasificados en la '
+                           'biblioteca)'.format(from_index) if from_index else '')
+                        ), 6000)
             except Exception:
                 pass
         except Exception:
@@ -560,27 +1000,18 @@ class BookClassifierAction(InterfaceAction):
                 if result.get('failed'):
                     run['failed_chunks'].append(result.get('error', ''))
                 else:
-                    if result.get('writes_by_field'):
-                        apply_ml_writes(self.gui, result['writes_by_field'])
-                    reason_field = (run['settings'].get('llm_reason_field')
-                                    if run['settings'].get('llm_write_reason', True) else None)
-                    if result.get('reason_writes') and reason_field:
-                        self._apply_reason_writes(reason_field, result['reason_writes'])
-                    serie_field = (run['settings'].get('llm_serie_field')
-                                   if run['settings'].get('llm_write_serie', True) else None)
-                    if result.get('serie_writes') and serie_field:
-                        self._apply_custom_writes(serie_field, result['serie_writes'],
-                                                  'la serie detectada por la IA', 'texto')
-                    conf_field = (run['settings'].get('llm_conf_field')
-                                  if run['settings'].get('llm_write_conf', True) else None)
-                    if result.get('conf_writes') and conf_field:
-                        self._apply_custom_writes(conf_field, result['conf_writes'],
-                                                  'el % de confianza de la IA',
-                                                  'entero (numero)')
+                    self._apply_llm_writes(result, run['settings'])
                     run['rescued'] += result.get('rescued', 0)
                     run['errors']  += result.get('errors', 0)
+                    run['temas_sin_libreria'] = run.get('temas_sin_libreria', 0) \
+                        + result.get('temas_sin_libreria', 0)
                     for k, v in result.get('dist', {}).items():
                         run['dist'][k] = run['dist'].get(k, 0) + v
+                    for clave in ('revisar_causes', 'unknown_names'):
+                        for k, v in result.get(clave, {}).items():
+                            run[clave][k] = run[clave].get(k, 0) + v
+                    for k, v in (result.get('tokens') or {}).items():
+                        run['tokens'][k] = run['tokens'].get(k, 0) + v
                     if not run['first_error'] and result.get('first_error'):
                         run['first_error'] = result['first_error']
                     room = 400 - len(run['book_details'])
@@ -637,14 +1068,20 @@ class BookClassifierAction(InterfaceAction):
             layout = QVBoxLayout(dialog)
 
             # Sin candidatos: mensaje breve y claro
-            if candidates == 0 and not stats.get('cancelled'):
+            if (candidates == 0 and not stats.get('from_index')
+                    and not stats.get('cancelled')):
                 dialog.resize(470, 210)
                 msg = QLabel(
                     'No se encontraron libros sin clasificar entre los {} '
                     'revisados.\n\nEl rescate con IA solo actua sobre los libros '
                     'marcados como "[REVISAR]" o "(sin datos)". Clasifica primero '
-                    'en local; el rescate se ocupa despues de los dudosos.'.format(
-                        stats.get('total', 0)))
+                    'en local; el rescate se ocupa despues de los dudosos.'
+                    .format(stats.get('total', 0))
+                    + ('\n\n{} de ellos ya los habia clasificado la IA en una '
+                       'pasada anterior (tienen valor en su campo dedicado), asi '
+                       'que no se vuelven a enviar. Usa la reevaluacion forzada '
+                       'si quieres repetirlos.'.format(stats.get('already_llm', 0))
+                       if stats.get('already_llm') else ''))
                 msg.setWordWrap(True)
                 msg.setAlignment(Qt.AlignmentFlag.AlignTop)
                 layout.addWidget(msg)
@@ -677,6 +1114,58 @@ class BookClassifierAction(InterfaceAction):
                 'Rescatados por la IA:     {}'.format(stats.get('rescued', 0)),
                 'Errores:                  {}'.format(stats.get('errors', 0)),
             ]
+            if stats.get('from_index'):
+                lines.append(
+                    'De ellos, sin preguntar: {} (otra copia del mismo titulo y '
+                    'autor ya estaba clasificada{})'.format(
+                        stats['from_index'],
+                        '; {} por titulo sin subtitulo'.format(
+                            stats['from_index_loose'])
+                        if stats.get('from_index_loose') else ''))
+            if stats.get('already_llm'):
+                lines.append(
+                    'Omitidos por ya rescatados: {} (reevaluacion forzada para '
+                    'repetirlos)'.format(stats['already_llm']))
+            if stats.get('temas_sin_libreria'):
+                lines.append(
+                    'Temas guardados sin libreria: {} (la IA no resolvio la '
+                    'libreria, pero sus temas SI se guardan porque van a una '
+                    'columna propia)'.format(stats['temas_sin_libreria']))
+            causas = stats.get('revisar_causes', {})
+            if causas:
+                mc = stats.get('min_conf', 0.55)
+                etiquetas = [
+                    ('umbral', 'confianza por debajo del umbral ({:.0%})'.format(mc)),
+                    ('declarado', 'la IA dice que no tiene base para decidir'),
+                    ('nombre', 'nombre de libreria fuera del catalogo'),
+                    ('sin_libreria', 'respuesta sin el campo libreria'),
+                    ('sin_respuesta', 'el modelo no devolvio ese libro'),
+                    ('otro', 'sin clasificar (causa desconocida)'),
+                ]
+                lines += ['', 'Sin resolver ({}), por que:'.format(
+                    sum(causas.values()))]
+                for clave, texto in etiquetas:
+                    if causas.get(clave):
+                        lines.append('   {:<4} {}'.format(causas[clave], texto))
+                desconocidos = stats.get('unknown_names', {})
+                if desconocidos:
+                    top = sorted(desconocidos, key=lambda k: -desconocidos[k])[:6]
+                    lines.append('        nombres no reconocidos: {}'.format(
+                        ', '.join('"{}" x{}'.format(n, desconocidos[n]) for n in top)))
+            tk = stats.get('tokens') or {}
+            if tk.get('llamadas'):
+                ent, cache = tk.get('in', 0), tk.get('cache', 0)
+                pct = (100.0 * cache / ent) if ent else 0.0
+                lines += ['', 'Consumo del modelo ({} llamada{}):'.format(
+                    tk['llamadas'], '' if tk['llamadas'] == 1 else 's')]
+                lines.append('   entrada {:,} tokens, de los que {:,} ({:.0f}%) '
+                             'vinieron de la cache'.format(ent, cache, pct)
+                             .replace(',', '.'))
+                lines.append('   salida  {:,} tokens'.format(
+                    tk.get('out', 0)).replace(',', '.'))
+                if ent and pct < 5:
+                    lines.append('   (la parte fija del prompt no se esta '
+                                 'cacheando: se paga entera en cada lote)')
             dist = stats.get('dist', {})
             if dist:
                 lines += ['', 'Reparto por libreria (IA):']

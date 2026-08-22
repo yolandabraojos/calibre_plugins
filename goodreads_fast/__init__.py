@@ -31,7 +31,7 @@ class GoodreadsFast(Source):
     description = ('Downloads metadata and covers from Goodreads using the live '
                   'autocomplete search. Finds books by title/author even without ISBN.')
     author = 'Yolanda Braojos (based on Goodreads by Grant Drake)'
-    version = (1, 8, 10)
+    version = (1, 8, 14)
     minimum_calibre_version = (2, 0, 0)
 
     capabilities = frozenset(['identify', 'cover'])
@@ -74,6 +74,31 @@ class GoodreadsFast(Source):
         r'\bcycle\b|\btrilog\w*|\bduolog\w*|\btome\b|\btomo\b|\blibro\b|'
         r'\blivre\b|\bband\b|\breihe\b|\bn[oº]\b|nº)'
         r'[^)\]}]*[\)\]\}]', re.IGNORECASE)
+
+    # Separadores de segmento (cabeza / cola / intermedios), usados tanto para
+    # el titulo de la consulta como para el titulo del candidato.
+    #
+    # Ademas de ':' y ' - ' (guion con espacios), se reconocen las variantes
+    # que usan guion bajo en vez de -- o junto a -- esos caracteres, tipicas de
+    # titulos sacados de un nombre de fichero (donde ':' y el espacio no son
+    # validos):
+    #   - ':' con guiones bajos y/o espacios alrededor ("Blade_:_A ...").
+    #   - ' - ' con guiones bajos en vez de o ademas de los espacios
+    #     ("Blade_-_A ...", "Blade -_A ...").
+    #   - dos o mas '_' seguidos ("Blade__A ..."). Un solo '_' NO se trata como
+    #     separador de segmento aqui a proposito: casi siempre es solo un
+    #     sustituto de un espacio suelto ("Blade_A_Bear_Shifter_Biker_Romance"
+    #     entero), y partir por cada uno dejaria trozos de una sola palabra
+    #     (los une _clean_query_title mas abajo, convirtiendolos en espacios).
+    #     Una RACHA de 2+ si es una senal deliberada de separador, igual que
+    #     ':' o ' - '.
+    #   - la barra vertical '|', vista en catalogos exportados a mano.
+    _SEGMENT_SPLIT_RE = re.compile(
+        r'[\s_]*:[\s_]*'                     # ':' con _/espacios alrededor (o nada)
+        r'|[\s_]+[-\u2013\u2014][\s_]+'      # ' - ' con _ y/o espacios a los lados
+        r'|_{2,}'                            # dos o mas '_' seguidos
+        r'|\s*\|\s*'                        # '|'
+    )
 
     @property
     def user_agent(self):
@@ -162,6 +187,25 @@ class GoodreadsFast(Source):
         'eleventh twelfth'.split(),
         ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'] * 2))
 
+    # Sustantivos con los que termina un reclamo de genero (los subtitulos que
+    # Amazon/KDP pegan a los libros: "A Reverse Harem Dragon Shifter Romance").
+    _GENRE_TAIL_WORDS = frozenset((
+        'romance romances novel novels novella novellas story stories tale '
+        'tales thriller thrillers mystery mysteries saga adventure anthology '
+        'collection memoir comedy fantasy suspense erotica western romcom '
+        'standalone').split())
+
+    # Vocabulario de tropos/etiquetas comerciales. Solo se usa para reconocer
+    # un reclamo de genero que NO empieza por articulo ("Reverse Harem Dragon
+    # Shifter Romance"); con articulo delante basta el sustantivo final.
+    _TROPE_WORDS = frozenset((
+        'shifter shifters harem reverse mafia billionaire alien aliens vampire '
+        'vampires werewolf werewolves dragon dragons paranormal contemporary '
+        'historical romantic biker bikers cowboy cowboys alpha omega bully '
+        'enemies lovers forbidden arranged fake curvy grumpy sunshine steamy '
+        'spicy motorcycle brotherhood military holiday christmas smalltown '
+        'stepbrother stepbrothers monster orc dark sci fi paranormal').split())
+
     def _number_tokens(self, text):
         # Extract number/ordinal tokens from the RAW title string. We must not
         # use get_title_tokens here: calibre strips parenthesised text, so a
@@ -195,6 +239,31 @@ class GoodreadsFast(Source):
             return True
         return all(t in self._VOLUME_WORDS or t in self._NUM_WORDS or t.isdigit()
                     for t in tokens)
+
+    def _is_boilerplate_segment(self, text):
+        """True if a title segment is a genre blurb rather than a title.
+
+        Los subtitulos comerciales tipo "A Reverse Harem Dragon Shifter
+        Romance" o "A Bear Shifter Biker Romance" los comparten CIENTOS de
+        libros distintos. Usados como nucleo de busqueda por su cuenta hacen
+        que un libro que ni siquiera esta en Goodreads case "exacto" con otro
+        cualquiera del mismo genero: fue lo que devolvio "Singed: A Reverse
+        Harem Dragon Shifter Romance" (Misty Malloy) para "Bonded to her Royal
+        Mates" (Claire Heat) -- tsim=1.00, exact, autor sin relacion.
+
+        Se reconoce por como termina, no por una lista de frases:
+        - "<articulo> ... <sustantivo de genero>", o
+        - sin articulo, "<sustantivo de genero>" al final y algun tropo dentro.
+
+        Solo se aplica a segmentos que NO son la cabeza del titulo: si el
+        titulo entero es un reclamo asi, es lo unico que hay y se busca igual.
+        """
+        words = re.findall(r'[a-z0-9]+', lower(text or ''))
+        if len(words) < 2 or words[-1] not in self._GENRE_TAIL_WORDS:
+            return False
+        if words[0] in ('a', 'an', 'the'):
+            return True
+        return any(w in self._TROPE_WORDS for w in words)
 
     def _strip_series_paren(self, text):
         """Remove a parenthetical that names a series or gives its index, so it
@@ -252,7 +321,7 @@ class GoodreadsFast(Source):
         may be BEFORE or AFTER separators like ':' or ' - ' (e.g. a series prefix
         such as "Fate of Wizardoms - Wizardoms: Rise of a Wizard Queen")."""
         full = self._clean_query_title(title, False)
-        segs = re.split(r'\s*:\s*|\s+[-\u2013\u2014]\s+', normalize(title or ''))
+        segs = self._SEGMENT_SPLIT_RE.split(normalize(title or ''))
         segs = [self._clean_query_title(x, False) for x in segs]
         segs = [x for x in segs if len(x) >= 3]
         cores = []
@@ -261,10 +330,11 @@ class GoodreadsFast(Source):
                 cores.append(x)
         if segs:
             add(segs[0])            # head (usual case: title first)
-        if len(segs) > 1:
+        if len(segs) > 1 and not self._is_boilerplate_segment(segs[-1]):
             add(segs[-1])           # tail (series-prefixed titles)
         for mid in segs[1:-1]:      # middle segments: the real title may be
-            add(mid)                # buried between a series prefix and a suffix
+            if not self._is_boilerplate_segment(mid):
+                add(mid)            # buried between a series prefix and a suffix
         add(full)                   # everything, as a last resort
         return cores
 
@@ -349,18 +419,28 @@ class GoodreadsFast(Source):
         match look weak against a short query core -- letting an unrelated,
         wrongly-authored but identically-titled book win via the
         unconditional "exact" gate."""
-        segs = re.split(r'\s*:\s*|\s+[-\u2013\u2014]\s+', bare_ns or '')
+        segs = self._SEGMENT_SPLIT_RE.split(bare_ns or '')
         segs = [s.strip() for s in segs if len(s.strip()) >= 3]
         variants = []
         seen = set()
-        def add(s, allow_structural=True):
+        def add(s, allow_structural=True, allow_boilerplate=True):
             # Glue apostrophes exactly like _clean_query_title does for the
             # query side ("She's" -> "Shes"). calibre's get_title_tokens does
             # NOT split on/strip an internal apostrophe, so without this the
             # query token "shes" never equals the candidate token "she's" and
             # an otherwise-perfect match loses enough similarity to miss the
             # acceptance gate.
-            s_glued = (s or '').replace("'", '').replace('\u2019', '')
+            # Un '_' suelto que sobreviva al split (sustituto de un espacio,
+            # p.ej. dentro de "A_Bear_Shifter_Biker_Romance") se pasa a espacio
+            # aqui, igual que hace _clean_query_title para el lado de la
+            # consulta -- si no, get_title_tokens (de calibre) podria no
+            # partir por el, y "bear_shifter" no compararia igual que "bear
+            # shifter".
+            s_glued = (s or '').replace("'", '').replace('\u2019', '').replace('_', ' ')
+            # El reclamo de genero se comprueba ANTES de tokenizar: el articulo
+            # ("A", "An", "The") es parte de la senal y get_title_tokens lo tira.
+            if not allow_boilerplate and self._is_boilerplate_segment(s_glued):
+                return
             toks = frozenset(lower(t) for t in self.get_title_tokens(s_glued, strip_subtitle=False))
             if not toks or toks in seen:
                 return
@@ -371,9 +451,11 @@ class GoodreadsFast(Source):
         if segs:
             add(segs[0], allow_structural=False)          # head
             if len(segs) > 1:
-                add(segs[-1], allow_structural=False)      # tail
+                add(segs[-1], allow_structural=False,      # tail
+                    allow_boilerplate=False)
             for mid in segs[1:-1]:                          # any segment(s)
-                add(mid, allow_structural=False)            # in between
+                add(mid, allow_structural=False,            # in between
+                    allow_boilerplate=False)
         add(bare_ns)
         return variants
 

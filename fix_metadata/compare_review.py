@@ -58,8 +58,13 @@ def review_changes(gui, db, proposals, fields,
 
     def get_metadata(book_id):
         # CompareMany calls this per book and expects (oldmi, newmi).
+        # get_cover/cover_as_data is only needed when 'cover' is one of the
+        # fields being compared, but it's cheap and fetched lazily (one book
+        # at a time, as the user navigates the dialog), so it's always
+        # requested here rather than threading a "show_cover" flag through.
         oldmi = db.get_metadata(book_id, index_is_id=True,
-                                get_user_categories=False)
+                                get_user_categories=False,
+                                get_cover=True, cover_as_data=True)
         return oldmi, proposals[book_id]
 
     d = CompareMany(

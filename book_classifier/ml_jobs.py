@@ -45,7 +45,7 @@ def _group_key(db, bid, settings):
     return None
 
 
-def _llm_promoted_library(db, bid, settings):
+def _llm_promoted_library(db, bid, settings, stats=None):
     """
     Nivel adicional (promocion): lee -nunca escribe- el campo DEDICADO de la
     IA en la nube (`llm_library_field`, escrito solo por
@@ -64,7 +64,12 @@ def _llm_promoted_library(db, bid, settings):
         raw = db.field_for(lib_field, bid)
     except Exception:
         return None
-    if lib_field == 'tags' or isinstance(raw, (list, tuple)):
+    if lib_field != 'tags' and isinstance(raw, (list, tuple)):
+        # Columna PROPIA multivalor: el valor entero es de la IA, no lleva
+        # prefijo. Buscarlo dejaba `value` a None y la promocion no ocurria
+        # nunca con ese tipo de columna.
+        value = next((str(v).strip() for v in raw if str(v).strip()), None)
+    elif lib_field == 'tags' or isinstance(raw, (list, tuple)):
         prefix = settings.get('llm_library_prefix', 'Biblioteca IA: ')
         value = None
         for v in (raw or []):
@@ -89,7 +94,85 @@ def _llm_promoted_library(db, bid, settings):
     threshold = settings.get('llm_promote_threshold', 0.90)
     if conf_frac < threshold:
         return None
-    return value, conf_frac
+
+    # El valor se VALIDA contra el catalogo actual (desde 3.17.0). Antes se
+    # copiaba literal, asi que un nombre de un catalogo anterior guardado en
+    # el campo de la IA -p.ej. 'Misterio·Thriller·Terror' despues de trocearlo-
+    # resucitaba en el campo principal en la siguiente clasificacion local, y
+    # habia que acordarse de re-rescatar ANTES de clasificar. `norm_libreria`
+    # ademas canoniza: 'Ciencia Ficcion' sin tilde o 'Misterio' a secas entran
+    # como el nombre exacto del catalogo.
+    try:
+        from calibre_plugins.book_classifier import llm_rescue_engine as eng
+    except Exception:
+        return None   # sin catalogo no se promociona: mejor eso que copiar mal
+    canonico = eng.norm_libreria(value)
+    if canonico == eng.REVISAR:
+        if stats is not None:
+            stats['promocion_nombre_invalido'] = \
+                stats.get('promocion_nombre_invalido', 0) + 1
+            malos = stats.setdefault('promocion_nombres', {})
+            clave = str(value)[:40]
+            malos[clave] = malos.get(clave, 0) + 1
+        return None
+    return canonico, conf_frac
+
+
+def _llm_promoted_temas(db, bid, settings, vocab):
+    """Temas que la IA guardo en su campo propio (`llm_temas_field`), listos
+    para SUSTITUIR a los que detecta el motor local por regex.
+
+    Mismo nivel 0 que la libreria y con el mismo liston (`llm_conf_field` /
+    100 >= `llm_promote_threshold`): los temas no traen confianza propia -son
+    multietiqueta-, pero si la IA entendio mal el libro sus temas tampoco
+    valen. Solo LEE el campo de la IA, nunca escribe en el.
+
+    Se validan contra el vocabulario ACTUAL de mood_rules.json: un nombre de
+    una version anterior del vocabulario (los 11 que se desdoblaron en 3.10.0)
+    no debe resucitar en el campo bueno. Devuelve [] si no aplica.
+    """
+    if not settings.get('llm_promote_temas_enabled', True):
+        return []
+    campo = (settings.get('llm_temas_field') or '').strip()
+    if not campo or not vocab:
+        return []
+    try:
+        raw = db.field_for(campo, bid)
+    except Exception:
+        return []
+    prefijo = (settings.get('llm_temas_prefix', 'Tema IA: ')
+               if campo == 'tags' else '')
+    valores = []
+    if isinstance(raw, (list, tuple)):
+        for v in raw:
+            v = str(v)
+            if prefijo:
+                if not v.startswith(prefijo):
+                    continue
+                v = v[len(prefijo):]
+            valores.append(v.strip())
+    elif isinstance(raw, str):
+        valores = [x.strip() for x in raw.split(',') if x.strip()]
+    valores = [v for v in valores if v]
+    if not valores:
+        return []
+
+    conf_field = (settings.get('llm_conf_field') or '').strip()
+    if not conf_field:
+        return []
+    try:
+        conf_raw = db.field_for(conf_field, bid)
+        conf_frac = float(conf_raw) / 100.0 if conf_raw is not None else 0.0
+    except Exception:
+        return []
+    if conf_frac < settings.get('llm_promote_threshold', 0.90):
+        return []
+
+    try:
+        from calibre_plugins.book_classifier import llm_rescue_engine as eng
+        return eng.norm_temas(valores, vocab)
+    except Exception:
+        return [v for v in valores if v in vocab]
 
 
 def plan_classify_chunks(gui, book_ids, settings):
@@ -237,6 +320,15 @@ def run_classify_chunk_task(db, subgroups, loose_ids, settings, label,
     subtitle_field = s.get('subtitle_field', '#subtitle')
     unify_moods    = s.get('group_unify_moods', True)
 
+    # Vocabulario ACTUAL de temas, para validar los que venga de la IA (ver
+    # _llm_promoted_temas). Sale del propio clasificador, que ya cargo
+    # mood_rules.json, asi que no se relee el fichero.
+    try:
+        vocab_temas = list(getattr(clf, 'mood_desc', {}).keys()) or \
+            [n for n, _rx in getattr(clf, '_mood', [])]
+    except Exception:
+        vocab_temas = []
+
     # ── Pasada 1: clasificacion individual de TODOS los libros del job ───────
     per_book = {}
     total = len(all_ids)
@@ -283,16 +375,26 @@ def run_classify_chunk_task(db, subgroups, loose_ids, settings, label,
             # ver COMPORTAMIENTO_PLUGIN.md).
             promoted = False
             if s.get('llm_promote_enabled', True):
-                promo = _llm_promoted_library(db, bid, s)
+                promo = _llm_promoted_library(db, bid, s, result)
                 if promo is not None:
                     library, confidence = promo
                     uncertain = False
                     promoted = True
 
+            # Los TEMAS de la IA sustituyen a los del motor local cuando la
+            # confianza llega al umbral: los de la IA salen de razonar sobre
+            # la sinopsis, los de regex son coincidencias literales. El campo
+            # propio de la IA conserva el original, asi que es reversible.
+            moods = res['moods']
+            temas_ia = _llm_promoted_temas(db, bid, s, vocab_temas)
+            if temas_ia:
+                moods = temas_ia
+                result['temas_promovidos'] = result.get('temas_promovidos', 0) + 1
+
             per_book[bid] = {
                 'title': title, 'tags': tags, 'authors': authors,
                 'library': library, 'confidence': confidence,
-                'uncertain': uncertain, 'moods': res['moods'],
+                'uncertain': uncertain, 'moods': moods,
                 'llm_promoted': promoted,
             }
         except Exception as e:

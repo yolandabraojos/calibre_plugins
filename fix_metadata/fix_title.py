@@ -213,14 +213,18 @@ _SERIES_NUM_COLON_RE = re.compile(
 #   only tried late in the cascade (see find_series_in_title), after all the
 #   keyword-anchored colon/dash patterns have had a chance to match.
 _TITLE_COLON_SERIES_BARENUM_RE = re.compile(
-    r'^(.+?):\s+(.+?)\s+' + _NUM + r'\s*$', re.IGNORECASE,
+    r'^(.+?):\s+(.+?),?\s+' + _NUM + r'\s*$', re.IGNORECASE,
 )
 # AB - "Title: Series Name #N"  (colon-prefixed, HASH before the number, no
 #   Book/Volume keyword) -- e.g. "The Worst Reunion Ever: Kate & Kylie
 #   Mystery #3". Mirrors AA but for the "#N" numbering style, which AA can't
-#   reach ("#" isn't a digit so it breaks AA's "\s+NUM$" match).
+#   reach ("#" isn't a digit so it breaks AA's "\s+NUM$" match). The
+#   optional ",?" before the number/hash keeps a "Series Name, #N" /
+#   "Series Name, N" style comma out of the captured series name (e.g.
+#   "Assimilation, Love, and Other Human Oddities: Claimings, #2" ->
+#   series="Claimings", not "Claimings,").
 _TITLE_COLON_SERIES_HASH_RE = re.compile(
-    r'^(.+?):\s+(.+?)\s+#(\d+(?:\.\d+)?)\s*$', re.IGNORECASE,
+    r'^(.+?):\s+(.+?),?\s+#(\d+(?:\.\d+)?)\s*$', re.IGNORECASE,
 )
 # R - "Title - Book N in/of [the] Series Name [Series]" (also ': ' / '(...)')
 #   "Coveted - Book 3 in the Gwen Sparks Series", "X (Book 2 of the Y Saga)"
@@ -947,6 +951,31 @@ _GEN_SERIES_LANG_ONLY_RE = re.compile(r'^[a-z]{2,3}$', re.IGNORECASE)
 _GEN_SERIES_EDITION_RE = re.compile(r'\bedition\s*$', re.IGNORECASE)
 _GEN_SERIES_YEAR_ONLY_RE = re.compile(r'^\d{4}$')
 _GEN_SERIES_COPY_MARKER_RE = re.compile(r'^c\.?\s*\d+$', re.IGNORECASE)
+# Credit/byline annotations -- "(Translated by Jane Doe)", "(Read by John
+# Smith)" -- are not a universe/imprint tag, they name who did the
+# translating/narrating/illustrating. Only the leading verb+"by" needs to
+# match; whatever name follows is irrelevant.
+_GEN_SERIES_BYLINE_RE = re.compile(
+    r'^(?:translated|illustrated|narrated|read|foreword|introduction|'
+    r'afterword|edited|adapted|abridged|retold|preface|forward)\s+by\b',
+    re.IGNORECASE,
+)
+# Format/edition descriptors that are common on ebook/audiobook titles but
+# are never a series/universe name -- "(Unabridged)", "(Annotated)",
+# "(Large Print)", "(With a New Introduction)". "...Edition" itself is
+# already handled by _GEN_SERIES_EDITION_RE above; these are the other
+# common phrasings that slip past it (e.g. "Collector's Edition" is caught
+# there too, kept here as a second anchor since the descriptor list already
+# lives here).
+_GEN_SERIES_FORMAT_DESC_RE = re.compile(
+    r'^(?:unabridged|abridged|annotated|retold|revised|updated|expanded|'
+    r'definitive|complete\s+and\s+unabridged|author\'?s\s+cut|'
+    r'director\'?s\s+cut|large\s+print|graphic\s+novel(?:\s+adaptation)?|'
+    r'study\s+guide|teacher\'?s\s+(?:edition|guide)|collector\'?s\s+edition|'
+    r'with\s+(?:a\s+)?(?:new\s+)?(?:introduction|foreword|afterword)'
+    r'(?:\s+by\s+.+)?)$',
+    re.IGNORECASE,
+)
 
 
 def find_generic_series_in_title(title):
@@ -996,6 +1025,10 @@ def find_generic_series_in_title(title):
     if re.search(r'\d', content):
         return None
     if _SUBTITLE_CONTAINER_RE.match(content):
+        return None
+    if _GEN_SERIES_BYLINE_RE.match(content):
+        return None
+    if _GEN_SERIES_FORMAT_DESC_RE.match(content):
         return None
     if not _is_valid_series(content):
         return None
@@ -1239,11 +1272,14 @@ def make_clean_title(title, series=None, index=None, language=None,
                        '', t, flags=re.IGNORECASE).strip()
         t = re.sub(r'\s+-\s+' + s_pat + r'\s+' + idx_re + r'\s*$',
                    '', t, flags=re.IGNORECASE).strip()
-        # ": Series N"  bare colon suffix, no keyword (Pattern AA)
-        t = re.sub(r'\s*:\s+' + s_pat + r'\s+' + idx_w + r'\s*$',
+        # ": Series N"  bare colon suffix, no keyword (Pattern AA). The
+        # optional ",?" before the index matches the same "Series Name, N"
+        # comma style the AA/AB detection regexes now tolerate (see
+        # _TITLE_COLON_SERIES_BARENUM_RE / _TITLE_COLON_SERIES_HASH_RE).
+        t = re.sub(r'\s*:\s+' + s_pat + r',?\s+' + idx_w + r'\s*$',
                    '', t, flags=re.IGNORECASE).strip()
         # ": Series #N"  bare colon suffix, hash before number (Pattern AB)
-        t = re.sub(r'\s*:\s+' + s_pat + r'\s+#' + idx_re + r'\s*$',
+        t = re.sub(r'\s*:\s+' + s_pat + r',?\s+#' + idx_re + r'\s*$',
                    '', t, flags=re.IGNORECASE).strip()
 
         # INLINE bracket  "[Series N]"

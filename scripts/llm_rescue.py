@@ -24,166 +24,38 @@ Uso:
 Requisitos: solo librería estándar (urllib). Sin pip install.
 """
 from __future__ import annotations
-import argparse, csv, hashlib, json, os, sys, time, urllib.request, urllib.error
+import argparse, csv, hashlib, json, os, re, sys, time, unicodedata
+import urllib.request, urllib.error
 
-# ─── Tus librerías (deben coincidir EXACTAMENTE con las del plugin) ────────────
-LIBRERIAS = [
-    "Romance contemporáneo",
-    "Romance histórico",
-    "Romantasy",
-    "Paranormal",
-    "Fantasía",
-    "Ciencia Ficción",
-    "Misterio·Thriller·Terror",
-    "Ficción general",
-    "No-Ficción",
-]
-REVISAR = "(revisar)"
+# ─── Catalogo y prompt: se importan del PLUGIN, que es la fuente de verdad ────
+# Antes estaban duplicados aqui a mano y se desincronizaban en cada cambio de
+# estanterias (paso de verdad: este script siguio ofreciendo el catalogo viejo
+# despues de trocear 'Misterio·Thriller·Terror'). El motor del plugin no
+# depende de calibre -solo urllib-, asi que se puede cargar por ruta desde
+# este script suelto y compartir LIBRERIAS, el prompt y los normalizadores.
+def _cargar_motor():
+    import importlib.util
+    ruta = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), os.pardir,
+        'book_classifier', 'llm_rescue_engine.py'))
+    if not os.path.exists(ruta):
+        sys.exit('No encuentro el motor del plugin en:\n  {}\n'
+                 'Este script comparte con el el catalogo de librerias y el '
+                 'prompt, asi que necesita el repositorio completo.'.format(ruta))
+    spec = importlib.util.spec_from_file_location('llm_rescue_engine', ruta)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-SYSTEM = (
-    "Eres un bibliotecario experto que clasifica libros en librerías temáticas "
-    "y detecta sus tropos. Respondes SIEMPRE con un único array JSON válido, "
-    "un objeto por libro y en el mismo orden, sin texto alrededor."
-)
 
-def build_batch_prompt(items, temas_vocab):
-    """items: lista de dicts {titulo, autor, sinopsis, tags}. Devuelve el prompt."""
-    opciones = "\n".join(f"  - {l}" for l in LIBRERIAS)
-    bloque_temas = ""
-    campo_temas = ""
-    if temas_vocab:
-        lista = "\n".join(f"  - {t}" for t in temas_vocab)
-        bloque_temas = (
-            "\nTEMAS permitidos (elige 0 o más SOLO de esta lista, textual):\n"
-            f"{lista}\n"
-        )
-        campo_temas = '"temas": [<0+ temas de la lista>], '
-    libros = []
-    for i, it in enumerate(items, 1):
-        partes = [f"[{i}] Título: {it['titulo']}",
-                  f"    Autor: {it['autor'] or '(desconocido)'}"]
-        if it.get('sinopsis'): partes.append(f"    Sinopsis: {it['sinopsis'][:1200]}")
-        if it.get('tags'):     partes.append(f"    Tags: {it['tags']}")
-        libros.append("\n".join(partes))
-    return (
-        "Clasifica CADA libro en UNA librería (excluyentes):\n"
-        f"{opciones}\n"
-        f"{bloque_temas}\n"
-        "Reglas:\n"
-        "1. NO clasifiques por el titulo solo: el titulo aislado NO basta (una "
-        "misma palabra cabe en varios generos). Basate en la SINOPSIS, los TAGS y "
-        "el autor. Puedes usar titulo+autor sin sinopsis SOLO si reconoces con "
-        "certeza ese libro o esa saga concreta; si no lo reconoces y no hay "
-        "sinopsis ni tags utiles, responde libreria='" + REVISAR + "' (no adivines "
-        "por palabras del titulo).\n"
-        "2. No-ficción, ensayo, biografía o divulgación → 'No-Ficción'.\n"
-        "3. Fantasía vs Ciencia Ficción. Base: magia, mundos secundarios y "
-        "criaturas vs tecnologia explicada, futuro y espacio. Para hibridos:\n"
-        "   3a. Poderes innatos por sangre, linaje o mutacion SIN sistema magico "
-        "explicito ni base tecnologica real (dones, castas con habilidades de "
-        "nacimiento, mutantes tipo X-Men, p.ej. los Plata de Red Queen): eso NO "
-        "es Ciencia Ficcion solo por sonar a 'poderes' o por ser un mundo "
-        "distopico -la palabra 'distopia' sola NO determina el genero-; es "
-        "'Fantasía', salvo que el poder se explique por ciencia real y explicita "
-        "(experimentos, virus, ingenieria genetica, IA, naves, futuro "
-        "tecnologico), en cuyo caso si es 'Ciencia Ficción'.\n"
-        "   3b. Science fantasy (naves o alta tecnologia conviviendo con un "
-        "poder mistico sin explicacion cientifica: ordenes de elegidos, "
-        "profecias, 'energia' o 'fuerza' heredada, espadas de energia con aura "
-        "magica, estilo Star Wars): decide por el MOTOR del conflicto central. "
-        "Si lo que mueve la trama es el poder mistico/heredado/profetico \u2192 "
-        "'Fantasía'; si son ideas o problemas tecnologicos plausibles \u2192 "
-        "'Ciencia Ficción'. La sola presencia de naves o planetas NO convierte "
-        "el libro en Ciencia Ficcion.\n"
-        "   3c. Steampunk / retrofuturismo (vapor, engranajes, dirigibles, "
-        "automatas, era victoriana alternativa): si ademas hay magia, criaturas "
-        "u ocultismo que funcionan de verdad \u2192 'Fantasía'; si todo es "
-        "tecnologia anacronica e inventos, sin magia real \u2192 'Ciencia Ficción'.\n"
-        "   3d. Post-colapso: si tras la caida de la civilizacion la magia "
-        "(re)aparece o la tecnologia antigua se trata como leyenda o religion "
-        "sin explicacion \u2192 'Fantasía'; si es postapocaliptico puramente "
-        "tecnologico o biologico (virus, ruinas, supervivencia, sin magia) \u2192 "
-        "'Ciencia Ficción'.\n"
-        "   3e. Espacio puro sin magia (space opera, naves, invasiones "
-        "alienigenas, colonias, IA) y sin romance central \u2192 'Ciencia Ficción'.\n"
-        "   3f. Poder de origen alienigena / otra especie: si el poder existe "
-        "porque el personaje ES un alienigena, un hibrido o desciende de una "
-        "especie extraterrestre (aunque la biologia de esa especie no se "
-        "explique con detalle cientifico), NO apliques 3a: no es un linaje "
-        "humano con dones sin explicar, es biologia de otra especie \u2192 "
-        "'Ciencia Ficción'. Distingue: 3a = linaje o casta HUMANA con poderes "
-        "que nadie explica (\u2192 Fantasía); 3f = el poder viene de SER de una "
-        "especie alienigena (\u2192 Ciencia Ficción). EXCEPCION: si ese mundo "
-        "ademas convive con un sistema de magia real que funciona (hechizos, "
-        "criaturas magicas, poder mistico no biologico), gana el sistema "
-        "magico \u2192 'Fantasía'.\n"
-        "   Si la lista de TEMAS esta disponible, marca la sub-regla que "
-        "aplicaste añadiendo el tema correspondiente: 3b \u2192 'Subgenero · "
-        "Science fantasy'; 3c \u2192 'Subgenero · Steampunk'; 3d \u2192 'Subgenero · "
-        "Postcolapso con magia'; 3f \u2192 'Subgenero · Poder alienigena'.\n"
-        "4. Pregunta clave: la relacion amorosa, es un PILAR CENTRAL de la "
-        "trama? NO basta con que haya romance o escenas picantes: el amor tiene "
-        "que ser un hilo principal. Si NO lo es, gana el GENERO (reglas 3, 5 y "
-        "6). Si SI lo es y ademas hay elemento fantastico, paranormal o sci-fi, "
-        "decide entre 'Romantasy' y 'Paranormal' por la AMBIENTACION:\n"
-        "   4a. 'Romantasy' = romance central + mundo INVENTADO por el autor, "
-        "NO reconocible como el nuestro: reino o imperio magico, mundo "
-        "secundario, corte de hadas, imperio espacial propio, colonia en otro "
-        "planeta, distopia futura de nueva planta. Da igual que el motor del "
-        "mundo sea magia o tecnologia: lo que importa es que el mundo NO es la "
-        "Tierra reconocible.\n"
-        "   4b. 'Paranormal' = romance central + Tierra actual o reconocible "
-        "(una ciudad real, un pueblo normal, nuestra historia, o un futuro "
-        "cercano que sigue siendo claramente nuestro mundo) con un elemento "
-        "sobrenatural o alienigena INSERTADO en ella: vampiros en Nueva York, "
-        "licantropos en un pueblo, un alien conviviendo con humanos (p.ej. la "
-        "serie Lux de J.L. Armentrout / los Luxen), fantasmas, angeles, "
-        "demonios.\n"
-        "   4c. ESTO APLICA IGUAL EN AMBIENTACION HISTORICA: Londres "
-        "victoriano/eduardiano, Persia antigua o regencia CON demonios, "
-        "maldiciones, magia o cazadores sobrenaturales (p.ej. Shadowhunters) "
-        "es Tierra reconocible del pasado \u2192 'Paranormal'. NO existe 'romance "
-        "historico paranormal': si detectas algo sobrenatural en tu propio "
-        "motivo, NO puede ser 'Romance histórico'. 'Romance histórico' es SOLO "
-        "romance terrenal en epoca real pasada (intriga de corte, matrimonios "
-        "concertados, guerra, sociedad de la epoca) SIN nada magico ni "
-        "sobrenatural.\n"
-        "   4d. Romance central SIN ningun elemento fantastico ni sobrenatural: "
-        "en el presente \u2192 'Romance contemporáneo'; en epoca real pasada \u2192 "
-        "'Romance histórico'.\n"
-        "5. Magia + crimen/investigacion: distingue DONDE vive la magia.\n"
-        "   5a. Si la magia, criaturas o poderes son el EJE DEL MUNDO (sociedad "
-        "entera de magos, razas sobrenaturales organizadas, sistema de magia "
-        "como worldbuilding), aunque la trama sea de investigacion, caza de "
-        "monstruos, crimen o amenaza (fantasia urbana con detective "
-        "sobrenatural, agentes, cazadores), NO uses "
-        "'Misterio\u00b7Thriller\u00b7Terror': aplica las reglas 3 y 4 "
-        "('Fantasía', 'Ciencia Ficción', 'Romantasy' o 'Paranormal' segun "
-        "corresponda).\n"
-        "   5b. Si lo sobrenatural es solo un RASGO PUNTUAL de la protagonista "
-        "en un mundo por lo demas normal y el foco real es resolver un crimen "
-        "(cozy mystery con bruja detective que regenta una tienda en un pueblo "
-        "normal, medium que ayuda a la policia, fantasma testigo), SI es "
-        "'Misterio\u00b7Thriller\u00b7Terror'. Prueba rapida: si quitando el "
-        "toque magico la trama sigue siendo un misterio reconocible, es "
-        "Misterio; si sin la magia el mundo entero se cae, aplica 5a.\n"
-        "   5c. 'Misterio\u00b7Thriller\u00b7Terror' cubre ademas crimen "
-        "realista, misterio policiaco, thriller de espias, terror psicologico "
-        "y terror sobrenatural puntual (casa encantada, posesion) sin "
-        "worldbuilding magico de fondo y sin romance central.\n"
-        "6. 'Ficción general' es narrativa literaria SIN elementos de genero "
-        "claros: sin magia como worldbuilding, sin crimen central, sin arco "
-        "romantico central, sin ciencia ficcion (drama contemporaneo, "
-        "literatura, autoficcion...). Un toque especulativo leve usado solo "
-        "como metafora literaria (un posible fantasma nunca confirmado, "
-        "realismo magico suave) NO saca el libro de 'Ficción general' si el "
-        "peso esta en los personajes y no en el elemento fantastico.\n"
-        "7. Si de verdad NO tienes base, libreria='" + REVISAR + "'. No inventes.\n\n"
-        "LIBROS:\n" + "\n\n".join(libros) + "\n\n"
-        "Devuelve un array JSON, un objeto por libro EN ORDEN:\n"
-        '[{"n": 1, "libreria": "<lista o (revisar)>", "confianza": <0.0-1.0>, '
-        + campo_temas + '"motivo": "<breve>"}, ...]'
-    )
+_ENG = _cargar_motor()
+
+LIBRERIAS = _ENG.LIBRERIAS
+REVISAR = _ENG.REVISAR
+SYSTEM = _ENG.SYSTEM
+build_batch_prompt = _ENG.build_batch_prompt   # (items, temas_vocab)
+norm_libreria = _ENG.norm_libreria             # (v[, librerias])
+norm_temas = _ENG.norm_temas                   # (v, vocab)
 
 # ─── Adaptadores de API (urllib, sin dependencias) ────────────────────────────
 def _http_post(url, payload, headers):
@@ -238,18 +110,6 @@ def parse_array(txt):
     s, e = txt.find("["), txt.rfind("]")
     return json.loads(txt[s:e + 1])
 
-def norm_libreria(v):
-    v = (v or "").strip()
-    for l in LIBRERIAS:
-        if v.lower() == l.lower():
-            return l
-    return REVISAR
-
-def norm_temas(v, vocab):
-    if not vocab or not isinstance(v, list): return []
-    vl = {t.lower(): t for t in vocab}
-    return [vl[str(x).strip().lower()] for x in v if str(x).strip().lower() in vl]
-
 def key_for(row):
     h = hashlib.sha1((row["Titulo"] + "|" + row["Autor"]).encode("utf-8")).hexdigest()
     return h[:16]
@@ -285,7 +145,10 @@ def main():
     model = args.model or default_model
     base  = args.base_url or default_base
     estados = {e.strip() for e in args.estados.split(",")}
-    temas_vocab = list((load_json(args.temas_file) or {}).keys()) if args.temas_file else []
+    crudo = (load_json(args.temas_file) or {}) if args.temas_file else {}
+    # Valor = regex (formato antiguo) u objeto {"regex", "desc"} (3.10.0).
+    temas_vocab = {n: ((r.get("desc") or "") if isinstance(r, dict) else "")
+                   for n, r in crudo.items()}
     key = os.environ.get(env) if env else None
 
     if args.diag:

@@ -12,3 +12,4 @@ __pycache__/
 Thumbs.db
 desktop.ini
 dedupe_out/
+columnas_out/

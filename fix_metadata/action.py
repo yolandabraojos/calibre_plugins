@@ -675,7 +675,15 @@ class FixMetadataAction(InterfaceAction):
             # mistaken for one of those (a numbered series paren always
             # contains a digit and is therefore never claimed here -- see
             # find_generic_series_in_title).
-            found_serie_gen = find_generic_series_in_title(title_for_detection)
+            #
+            # Gated on has_serie_gen: without the #serie_gen custom column
+            # the extracted text has nowhere to be saved, so it must NOT be
+            # stripped from the title either -- otherwise it's just deleted
+            # with no trace (bug found by Yolanda: any trailing "(...)"
+            # without a digit was being wiped from titles even for
+            # libraries that never created the #serie_gen column).
+            found_serie_gen = (find_generic_series_in_title(title_for_detection)
+                               if has_serie_gen else None)
             if found_serie_gen:
                 title_for_detection = strip_generic_series_paren(
                     title_for_detection, found_serie_gen)
@@ -859,7 +867,21 @@ class FixMetadataAction(InterfaceAction):
                         'No changes detected in the selected books.', show=True)
             return
 
-        fields = ('title', 'series', 'languages')
+        # Fix all never touches the cover, but showing it in the review
+        # dialog gives Yolanda visual context for the title/series being
+        # proposed. Only fetched for the (much smaller) set of books that
+        # actually got a proposal, not the full scan -- cheap even for the
+        # "entire library" scope. The "old" side is fetched with its own
+        # cover independently by compare_review.review_changes().
+        for book_id, newmi in proposals.items():
+            try:
+                cover_bytes = db.new_api.cover(book_id)
+            except Exception:
+                cover_bytes = None
+            if cover_bytes:
+                newmi.cover, newmi.cover_data = None, (None, cover_bytes)
+
+        fields = ('cover', 'title', 'series', 'languages')
         if has_subtitle:
             fields = fields + ('#subtitle',)
         if has_serie_gen:

@@ -214,8 +214,9 @@ class TestBuildExamples(unittest.TestCase):
         }]
         examples, diag = tbc.build_examples(rows)
         self.assertEqual(len(examples), 1)
-        text, label = examples[0]
+        text, label, origen = examples[0]
         self.assertEqual(label, 'Fantasía')
+        self.assertEqual(origen, 'humana')
         self.assertNotIn('Genero', text)
         self.assertIn('Fantasia epica', text)
         self.assertIn('Oscuro', text)
@@ -224,6 +225,72 @@ class TestBuildExamples(unittest.TestCase):
         # aportar señal, solo por unir 'Grupo' y 'Valor' en el mismo texto).
         self.assertNotIn('Subgenero', text)
         self.assertNotIn('Tono', text)
+
+    # --- Etiqueta prestada del rescate con IA (3.15.0) --------------------
+    # Sin esto no hay forma de tener ejemplos de las estanterias nuevas sin
+    # etiquetar miles de libros a mano.
+
+    def test_ia_label_used_when_no_human_label(self):
+        rows = [{'title': 'Solo IA', 'authors': 'C. Autor', 'comments': 'x',
+                 'tags': '', '#libreria': '', '#libreria_ia': 'Terror',
+                 '#confianza_ia': '95'}]
+        examples, diag = tbc.build_examples(rows)
+        self.assertEqual([(e[1], e[2]) for e in examples], [('Terror', 'ia')])
+        self.assertEqual(diag['etiqueta_ia'], 1)
+
+    def test_ia_label_ignored_below_threshold(self):
+        rows = [{'title': 'IA dudosa', 'authors': 'D. Autor', 'comments': 'x',
+                 'tags': '', '#libreria': '(revisar)', '#libreria_ia': 'Terror',
+                 '#confianza_ia': '70'}]
+        examples, diag = tbc.build_examples(rows)
+        self.assertEqual(examples, [])
+        self.assertEqual(diag['ia_sin_confianza'], 1)
+
+    def test_human_label_wins_over_ia(self):
+        rows = [{'title': 'Las dos', 'authors': 'E. Autor', 'comments': 'x',
+                 'tags': '', '#libreria': 'Fantasía', '#libreria_ia': 'Terror',
+                 '#confianza_ia': '100'}]
+        examples, _ = tbc.build_examples(rows)
+        self.assertEqual([(e[1], e[2]) for e in examples], [('Fantasía', 'humana')])
+
+    def test_min_conf_ia_101_disables_ia_labels(self):
+        rows = [{'title': 'Solo IA', 'authors': 'F. Autor', 'comments': 'x',
+                 'tags': '', '#libreria': '', '#libreria_ia': 'Terror',
+                 '#confianza_ia': '100'}]
+        examples, _ = tbc.build_examples(rows, min_conf_ia=101)
+        self.assertEqual(examples, [])
+
+    def test_column_names_are_configurable(self):
+        rows = [{'title': 'Otra biblio', 'authors': 'G. Autor', 'comments': 'x',
+                 'tags': '', '#estante': 'Terror'}]
+        examples, _ = tbc.build_examples(rows, cols={'libreria': '#estante'})
+        self.assertEqual([e[1] for e in examples], ['Terror'])
+
+    # --- Los TEMAS como senal de entrada (3.15.0) -------------------------
+
+    def test_temas_used_as_signal_without_the_leaky_ones(self):
+        rows = [{
+            'title': 'Con temas', 'authors': 'H. Autor', 'comments': 'x', 'tags': '',
+            '#libreria': 'Paranormal',
+            '#clasificacion': 'Paranormal · Vampiros, Subgenero · Paranormal romance',
+            '#clasificacion_ia': 'Tono · Oscuro, Subgenero · Fantasia urbana',
+        }]
+        examples, diag = tbc.build_examples(rows)
+        text = examples[0][0]
+        self.assertIn('Vampiros', text)       # contenido: se usa
+        self.assertIn('Oscuro', text)         # de la columna de la IA tambien
+        self.assertNotIn('Paranormal romance', text)   # equivale a la balda
+        self.assertNotIn('Fantasia urbana', text)      # idem via ALIAS
+        self.assertNotIn('Subgenero', text)   # el grupo no es contenido
+        self.assertEqual(diag['temas_usados'], 1)
+
+    def test_tema_delata_libreria(self):
+        for fuga in ('Subgenero · Paranormal sin romance', 'Terror sobrenatural',
+                     'Subgenero · Fantasia urbana', 'Misterio'):
+            self.assertTrue(tbc.tema_delata_libreria(fuga), fuga)
+        for senal in ('Paranormal · Vampiros', 'Subgenero · Cozy mystery',
+                      'Tono · Oscuro', 'Ambientacion · Espacial/Space opera'):
+            self.assertFalse(tbc.tema_delata_libreria(senal), senal)
 
 
 class TestTagValue(unittest.TestCase):

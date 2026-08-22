@@ -1,99 +1,606 @@
 {
-  "Dinamica · Enemigos a amantes": "enemies to lovers|enemigos a amantes",
-  "Dinamica · Slow burn": "slow burn",
-  "Dinamica · Segunda oportunidad": "second chance|segunda oportunidad",
-  "Dinamica · Prohibido": "forbidden (love|romance)|amor prohibido|romance prohibido|\\bforbidden\\b|prohibido|star.?crossed|amantes malditos|amantes desafortunados",
-  "Dinamica · Matrimonio fingido/conveniencia": "fake dating|fake relationship|marriage of convenience|matrimonio (por |de )?conveniencia|matrimonio fingido",
-  "Dinamica · Why choose / Haren inverso": "why ?choose|why-?choose|reverse harem|haren inverso|harem inverso|poliamor|polyamor|\\bmenage\\b|throuple|trio amoroso|trio romantico",
-  "Dinamica · Triangulo amoroso": "love triangle|triangulo amoroso|triangulo romantico|dos pretendientes",
-  "Dinamica · Amigos a amantes": "friends?[ -]?to[ -]?lovers|amigos a amantes|de amig[oa]s? a amantes|best friends? to lovers|de la amistad al amor",
-  "Dinamica · Amor a primera vista": "insta-?love|instalove|love at first sight|amor a primera vista|flechazo",
-  "Dinamica · Grumpy/Sunshine": "grumpy.{0,8}sunshine|sunshine.{0,8}grumpy|grunon|cascarrabias|hurano|malhumorado y",
-  "Dinamica · Solo una cama": "only one bed|one bed trope|solo una cama|una sola cama|sharing a bed|compartir (la )?cama",
-  "Dinamica · Proximidad forzada": "forced proximity|proximidad forzada|stuck together|snowed in|atrapados juntos|encerrados juntos|trapped together",
-  "Dinamica · Hermano del mejor amigo/a": "best friend ?s? (brother|sister|sibling)|brother ?s? best friend|sister ?s? best friend|hermano de mi mejor amig|mejor amig[oa] de mi herman|novi[oa] de mi herman",
-  "Dinamica · Companeros de piso": "roommates?-?to-?lovers|roommate romance|companer[oa]s? de piso|companer[oa]s? de cuarto|flatmate",
-  "Dinamica · Romance de oficina": "office romance|workplace romance|romance de oficina|romance laboral|romance en la oficina|coworker romance|jefe.{0,12}emplead",
-  "Dinamica · Embarazo sorpresa/Bebe secreto": "secret baby|surprise pregnancy|accidental pregnancy|unplanned pregnancy|bebe secreto|embarazo sorpresa|embarazo inesperado|embarazada de|hidden (baby|child)|secret pregnancy|oops baby",
-  "Dinamica · Padre/Madre soltero/a": "single (dad|father|mom|mum|mother|parent)|padre soltero|madre soltera|single-?parent|widower romance|viud[oa] con hij",
-  "Dinamica · Matrimonio concertado": "arranged marriage|matrimonio (concertado|arreglado|pactado|impuesto)|forced marriage|matrimonio forzad|betrothed|prometid[oa] desde",
-  "Dinamica · Opuestos se atraen": "opposites attract|opuestos se atraen|polos opuestos|los opuestos se",
-  "Dinamica · De odio a amor/Bully": "bully romance|hate-?to-?love|hate to love|de odio a amor|del odio al amor|romance de odio",
-  "Dinamica · Obsesion/Stalker": "\\bstalker\\b|obsession romance|obsessive (hero|love|man)|obsesion (con|por)|obsesiv|acosador|acechador|yandere|dark obsession",
-  "Dinamica · Posesivo/Celoso": "possessive (hero|alpha|man|love)|jealous (hero|man|alpha)|posesivo|celoso|territorial",
-  "Dinamica · Protector": "touch her and die|overprotective|fiercely protective|sobreprotector|protector nato|guardian protector",
-  "Dinamica · Matrimonio en crisis/Reconciliacion": "marriage in trouble|second chance marriage|estranged (spouse|husband|wife)|matrimonio en crisis|reconciliacion de pareja|separated couple|divorciados que",
-  "Dinamica · Amor no correspondido/Pining": "\\bpining\\b|unrequited (love|crush)|amor no correspondido|amor secreto|secret crush|longing for",
-  "Dinamica · Age gap": "age gap|older man|diferencia de edad|hombre mayor",
-  "Tono · Oscuro": "dark romance|romance oscuro|dark fantasy|grimdark",
-  "Tono · Picante/Erotico": "spicy|steamy|erotic|erotico|explicit|subido de tono|smut|sensual",
-  "Tono · Cozy/Ligero": "\\bcozy\\b|\\bcosy\\b|feel-?good|heartwarming|wholesome|comedia romantica|romantic comedy|romcom",
-  "Tono · Gotico": "gothic|gotic",
-  "Tono · Morally grey/Antiheroe": "morally (grey|gray)|moralmente gris|antiheroe|anti-?hero|villain romance|villano romantico|morally complex",
-  "Tono · Sin escenas/Sweet": "clean romance|sweet romance|closed-?door|sin escenas (explicit|de sexo)|romance dulce|wholesome romance|fade to black|low (heat|spice)|sin contenido sexual",
-  "Tono · Angst/Drama emocional": "\\bangst\\b|angsty|tearjerker|te hara llorar|desgarrador|lacrimogen|all the feels|heartbreaking|emotional rollercoaster|drama emocional",
-  "Arquetipo · Mafia": "\\bmafia\\b|bratva|cartel|mob boss",
-  "Arquetipo · Billonario/CEO": "billionaire|multimillonario|millonario|\\bceo\\b",
-  "Arquetipo · Deportistas": "sports romance|hockey romance|football romance|romance deportivo|hockey player|quarterback|jugador de (hockey|futbol|baloncesto)|\\bnhl\\b|\\bnfl\\b|soccer romance|baseball romance|mma fighter",
-  "Arquetipo · Moteros/MC": "motorcycle club|biker romance|\\bmc romance\\b|moteros?|club de moteros|biker gang|outlaw biker",
-  "Arquetipo · Militar/SEAL": "military romance|navy seal|\\bnavy seals\\b|romance militar|special forces|fuerzas especiales|veterano de guerra|ex-?militar|ex-?soldado",
-  "Arquetipo · Vaquero/Western": "\\bcowboy\\b|vaquero|western romance|romance del oeste|\\branch\\b|rancho|rodeo|ranchero",
-  "Arquetipo · Realeza": "royal romance|royalty romance|prince(ss)? romance|principe|princesa|realeza|romance real|crown prince|heredero al trono",
-  "Arquetipo · Guardaespaldas": "bodyguard|guardaespaldas|escolta|personal protection|romance de guardaespaldas",
-  "Arquetipo · Medico/Hospital": "medical romance|doctor romance|nurse romance|romance medico|enfermer[oa]|cirujano|surgeon romance|hospital romance",
-  "Arquetipo · Rockstar/Celebridad": "rock ?star|celebrity romance|estrella de rock|romance con famos|celebridad|popstar|fame romance",
-  "Arquetipo · Bombero": "firefighter|fireman|bombero|first responder romance",
-  "Arquetipo · Bad boy": "bad boy|chico malo|chico rebelde|tattooed (hero|bad boy)|reformed bad boy",
-  "Arquetipo · Universitario/New adult": "college romance|university romance|campus romance|romance universitario|new adult|fraternity|sorority|professor.{0,12}student",
-  "Paranormal · Vampiros": "vampire|vampir|vampiro",
-  "Paranormal · Lobos/Shifters": "werewolf|werewolves|shifter|hombre lobo|hombres lobo|cambiaform|\\balpha\\b|omegaverse|licantrop|\\bwolf\\b|\\bwolves\\b|lobos?|rejected mate|mate bond|pack dynamics|vinculo de companer|\\bmanada\\b",
-  "Paranormal · Dragones": "dragon",
-  "Paranormal · Brujas/Magos": "\\bwitch|\\bbruja|wizard|\\bmago\\b|hechicer",
-  "Paranormal · Fae/Feerico": "\\bfaes?\\b|faerie|feeric|fairy court|\\belf\\b|\\belves\\b|elfo|fairy|fairies|\\bhada\\b|hadas|pixie|duende|druid",
-  "Paranormal · Fated mates": "fated mate|destined mate|\\bfated\\b|companero destinado|almas gemelas|alma gemela|soul ?mate|rejected mate|sire bond|vinculo de sire",
-  "Paranormal · Omegaverse": "omegaverse|a/b/o|alpha beta omega|alpha/omega|celo del omega",
-  "Paranormal · Angeles y demonios": "angel romance|demon romance|angeles y demonios|fallen angel|angel caido|romance con un demonio|nephilim|\\bangels?\\b|\\bangeles\\b|\\bdemons?\\b|\\bdemonios?\\b|angelical|daemons?",
-  "Paranormal · Sirenas": "\\bmermaids?\\b|\\bmerm(an|en)\\b|sirena|sirenas|selkie|romance bajo el mar",
-  "Paranormal · Romance de monstruos": "monster romance|monster boyfriend|romance de monstruos|minotaur romance|orc romance|\\btentacle\\b|romance con un monstruo|monster love interest|interes amoroso monstruo",
-  "Ambientacion · Small town": "small town|pueblo pequeno|small-town",
-  "Ambientacion · Regencia": "regency|regencia|pride and prejudice|orgullo y prejuicio|austen|pride.?prejudice",
-  "Ambientacion · Victoriano": "victorian|victoriano|epoca victoriana",
-  "Ambientacion · Corte/Intriga palaciega": "court intrigue|royal court|intriga palaciega|intrigas de la corte|juego de tronos",
-  "Ambientacion · Navideno/Festivo": "christmas romance|holiday romance|navideno|navidad|festivo|winter romance|hallmark|romance de navidad|halloween romance|holidays?|\\bchristmas\\b",
-  "Ambientacion · Highlander/Escoces": "highlander|highland romance|scottish romance|escoces|\\bkilt\\b|tierras altas|clan macleod",
-  "Ambientacion · Piratas": "\\bpirate\\b|\\bpirata\\b|corsario|bucanero|high seas|capitan pirata",
-  "Ambientacion · Espacial/Space opera": "space opera|espacial|spaceship|nave espacial|estacion espacial|interestelar|space battles?|space marines?|space exploration",
-  "Ambientacion · Academia magica/Dark academia": "magic school|magic academy|academia magica|academy of magic|dark academia|escuela de magia|escuela de magos|colegio de magia|assassin academy|academia de asesinos|spy academy|academia de espias|boarding school|internado",
-  "Ambientacion · Viaje en el tiempo": "time travel|viaje en el tiempo|time-?slip|time traveler|viajer[oa] del tiempo|portal al pasado",
-  "Ambientacion · Casa encantada/Fantasmas": "haunted house|ghost story|casa encantada|fantasma|embrujad|poltergeist|presencia paranormal",
-  "Subgenero · Distopia/Apocaliptico": "dystopia|distopia|post-?apocali|apocalyptic|apocalipsis|fin del mundo|\\bapocalypse\\b",
-  "Subgenero · Fantasia urbana": "urban fantasy|fantasia urbana|paranormal and urban|paranormal urban",
-  "Subgenero · Fantasia epica": "epic fantasy|high fantasy|alta fantasia|epic quest|sword (and|&) sorcery|espada y brujeria",
-  "Subgenero · Romantasy": "romantasy|fantasy romance|romance fantastico|fantasia romantica",
-  "Subgenero · Cozy mystery": "cozy mystery|cosy mystery|misterio acogedor",
-  "Subgenero · Thriller psicologico": "psychological thriller|thriller psicologic|psicologic",
-  "Subgenero · Policiaco/Detective": "\\bdetective|police procedural|policiac|homicidios|brigada|inspector|\\bcrime\\b|policial|women sleuths|whodunit|asesinato|murder mystery|women sleuths?|women (private )?investigators?|mujer detective|\\bsleuth|private investigator|amateur sleuth|\\bnoir\\b|hard.?boiled|cold case|caso frio|female sleuth|\\bpolice\\b|closed circle|circulo cerrado de sospechosos",
-  "Subgenero · Zombi/No muertos": "zombie|zombi|undead|no muertos|muertos vivientes",
-  "Subgenero · Romance alienigena/Sci-fi": "alien romance|sci-?fi romance|romance alienigena|romance extraterrestre|space romance|romance espacial|romance de ciencia ficcion",
-  "Subgenero · Young adult/Juvenil": "young adult|literatura juvenil|novela juvenil|coming of age|coming-of-age|para adolescentes|\\bya fantasy\\b",
-  "Subgenero · LitRPG/GameLit": "litrpg|gamelit|\\bvrmmo\\b|dungeon core|system apocalypse|leveling up|game world",
-  "Subgenero · Fantasia progresiva/Cultivo": "cultivation|xianxia|\\bwuxia\\b|progression fantasy|fantasia progresiva|cultivo de qi",
-  "Subgenero · Espionaje/Espias": "spy thriller|spy romance|espionage|espionaje|\\bespia\\b|secret agent|agente secreto|\\bcia\\b|\\bmi6\\b|\\bkgb\\b|double agent|agente doble",
-  "Subgenero · Thriller legal": "legal thriller|courtroom|sala del tribunal|\\bjuicio\\b|abogad[oa]|fiscal (del|de distrito)|district attorney|tribunal|thriller juridico",
-  "Subgenero · Terror cosmico/Lovecraft": "lovecraft|cosmic horror|terror cosmico|eldritch|cthulhu|horror cosmico",
-  "Subgenero · Supervivencia": "survival story|survival thriller|supervivencia|wilderness survival|naufrag|stranded|perdidos en la|lucha por sobrevivir",
-  "Subgenero · Heist/Atraco": "\\bheist\\b|atraco|robo del siglo|con artist|estafador|timador|golpe maestro",
-  "Subgenero · Belica/Guerra": "war novel|novela belica|segunda guerra mundial|primera guerra mundial|\\bwwii\\b|\\bwwi\\b|guerra civil|frente de batalla|trinchera",
-  "Subgenero · Science fantasy": "science ?fantasy|science-fantasy|fantasia cientifica|ciencia fantasia|space fantasy|fantasia espacial|espada laser|energia mistica heredada",
-  "Subgenero · Steampunk": "steampunk|steam ?punk|gaslamp|gas lamp fantasy|clockpunk|dieselpunk|retrofuturis|\\bairships?\\b|dirigibles? (de vapor|y engranajes)|\\bautomatas?\\b|\\bautomatons?\\b|engranajes y vapor|era del vapor",
-  "Subgenero · Postcolapso con magia": "postcolapso con magia|post-?colapso con magia|magia tras el (colapso|apocalipsis)|post-?apocalyptic fantasy|postapocalyptic fantasy|dying earth|tierra moribunda|tecnologia (antigua |olvidada )?como (leyenda|religion|magia)|magic returns|la magia (regresa|vuelve|despierta)",
-  "Subgenero · Poder alienigena": "alien powers?|poder(es)? alienigenas?|alien (heritage|dna|hybrid|species)|adn alienigena|linaje alienigena|hibrid[oa] (alienigena|extraterrestre)|half-?alien|medio alienigena|descend(iente|ientes) de (alienigenas|extraterrestres)|especie alienigena|sangre alienigena",
-  "Subgenero · Superpoderes": "superpowers?|superpoderes|superhero|superheroe|\\bmutant\\b|poderes sobrehumanos|telepath|telepat|super ?powers?|psychic|psiquic|poderes psiquicos|inherited powers|poderes heredados|cardinal power|mind control|control mental|precognition|super ?hero(es)?",
-  "Representacion · LGBTQ+ (MM)": "mm romance|m/m romance|gay romance|\\bmlm\\b|boys'? love|\\bbl manhwa\\b|romance gay",
-  "Representacion · LGBTQ+ (FF)": "ff romance|f/f romance|lesbian|sapphic|girls'? love|romance lesbico",
-  "Tono · Trauma/Salud mental": "\\bptsd\\b|post.?traumatic|estres postraumatico|emotional (trauma|breakdown)|trauma emocional|mental (illness|health)|salud mental|enfermedad mental|mentally ill|depression|depresion|anxiety|ansiedad|psychiatric|psiquiatric|psychopatholog|multiple personality|\\bgrief\\b|\\bduelo\\b|bereavement|\\btherapy\\b|terapia|addiction|adiccion|drug abuse|abuso de drogas|death (and|&) dying",
-  "Subgenero · Asesino en serie": "serial killers?|asesin[oa]s? en serie",
-  "Tono · Cautiverio/Trata": "human trafficking|trata de (personas|blancas)|kidnapp|secuestr|abduction|captivity|cautiverio|held captive|sex slave|esclava sexual",
-  "Subgenero · Pandemia/Plaga": "pandemic|pandemia|\\bplagues?\\b|\\bplaga\\b|epidemic|epidemia|outbreak|influenza|biological weapons?|armas? biologicas?",
-  "Subgenero · Horror de criaturas": "dinosaurs?|dinosaurio|megalodon|\\bsharks?\\b|tiburon|giant (anaconda|shark|spider|crocodile|snake)|creature feature|kaiju|prehistoric"
+  "Dinamica · Enemigos a amantes": {
+    "regex": "enemies to lovers|enemigos a amantes",
+    "desc": "Empiezan enfrentados de verdad (rivales, bandos opuestos) y acaban juntos."
+  },
+  "Dinamica · Slow burn": {
+    "regex": "slow burn",
+    "desc": "La relacion tarda casi todo el libro en consumarse; la tension se estira."
+  },
+  "Dinamica · Segunda oportunidad": {
+    "regex": "second chance|segunda oportunidad",
+    "desc": "Fueron pareja en el pasado y se reencuentran anos despues."
+  },
+  "Dinamica · Prohibido": {
+    "regex": "forbidden (love|romance)|amor prohibido|romance prohibido|\\bforbidden\\b|prohibido|star.?crossed|amantes malditos|amantes desafortunados",
+    "desc": "El amor rompe una norma o un tabu (jerarquia, familia, oficio) y por eso se oculta."
+  },
+  "Dinamica · Relacion fingida": {
+    "regex": "fake dating|fake relationship|pareja fingida|noviazgo fingido|relacion fingida|fingir ser pareja|pretend (dating|relationship|boyfriend|girlfriend)|novi[oa] falso",
+    "desc": "Fingen ser pareja ante los demas por un pacto, sin llegar a casarse."
+  },
+  "Dinamica · Matrimonio por conveniencia": {
+    "regex": "marriage of convenience|matrimonio (por |de )?conveniencia|matrimonio fingido|fake marriage|matrimonio falso|green card marriage|matrimonio por papeles",
+    "desc": "Se casan de verdad por un pacto (dinero, papeles, herencia, alianza), sin amor de partida."
+  },
+  "Dinamica · Harem inverso/Why choose": {
+    "regex": "why ?choose|why-?choose|reverse harem|haren inverso|harem inverso",
+    "desc": "Una protagonista con varias parejas a la vez que NO tiene que elegir entre ellas."
+  },
+  "Dinamica · Poliamor/Trio": {
+    "regex": "poliamor|polyamor|\\bmenage\\b|throuple|trio amoroso|trio romantico|relacion abierta",
+    "desc": "Relacion de tres o mas en pie de igualdad, o abierta, sin la estructura del haren inverso."
+  },
+  "Dinamica · Triangulo amoroso": {
+    "regex": "love triangle|triangulo amoroso|triangulo romantico|dos pretendientes",
+    "desc": "Dos pretendientes y una eleccion: a diferencia del haren inverso, aqui hay que decidir."
+  },
+  "Dinamica · Amigos a amantes": {
+    "regex": "friends?[ -]?to[ -]?lovers|amigos a amantes|de amig[oa]s? a amantes|best friends? to lovers|de la amistad al amor",
+    "desc": "Una amistad larga que se convierte en amor."
+  },
+  "Dinamica · Amor a primera vista": {
+    "regex": "insta-?love|instalove|love at first sight|amor a primera vista|flechazo",
+    "desc": "Se enamoran en el primer encuentro; lo contrario del slow burn."
+  },
+  "Dinamica · Grumpy/Sunshine": {
+    "regex": "grumpy.{0,8}sunshine|sunshine.{0,8}grumpy|grunon|cascarrabias|hurano|malhumorado y",
+    "desc": "Uno hurano y cerrado, el otro luminoso y sociable."
+  },
+  "Dinamica · Solo una cama": {
+    "regex": "only one bed|one bed trope|solo una cama|una sola cama|sharing a bed|compartir (la )?cama",
+    "desc": "Se ven obligados a compartir cama o habitacion."
+  },
+  "Dinamica · Proximidad forzada": {
+    "regex": "forced proximity|proximidad forzada|stuck together|snowed in|atrapados juntos|encerrados juntos|trapped together",
+    "desc": "Quedan encerrados o aislados juntos (tormenta, viaje, mision) y la convivencia los acerca."
+  },
+  "Dinamica · Hermano del mejor amigo/a": {
+    "regex": "best friend ?s? (brother|sister|sibling)|brother ?s? best friend|sister ?s? best friend|hermano de mi mejor amig|mejor amig[oa] de mi herman|novi[oa] de mi herman",
+    "desc": "Se enamora del hermano o hermana de su mejor amigo; el tabu es la amistad."
+  },
+  "Dinamica · Companeros de piso": {
+    "regex": "roommates?-?to-?lovers|roommate romance|companer[oa]s? de piso|companer[oa]s? de cuarto|flatmate",
+    "desc": "Comparten piso o habitacion de forma estable antes de ser pareja."
+  },
+  "Dinamica · Romance de oficina": {
+    "regex": "office romance|workplace romance|romance de oficina|romance laboral|romance en la oficina|coworker romance|jefe.{0,12}emplead",
+    "desc": "Nace en el trabajo, con la jerarquia o las normas de la empresa de por medio."
+  },
+  "Dinamica · Embarazo sorpresa": {
+    "regex": "surprise pregnancy|accidental pregnancy|unplanned pregnancy|embarazo sorpresa|embarazo inesperado|embarazada de|oops baby",
+    "desc": "Un embarazo no planeado cambia la relacion; los dos lo saben."
+  },
+  "Dinamica · Bebe secreto": {
+    "regex": "secret baby|bebe secreto|hidden (baby|child)|secret pregnancy|hij[oa] secret|hij[oa] oculto",
+    "desc": "Ella oculta al padre que tuvo el hijo, y el lo descubre anos despues."
+  },
+  "Dinamica · Padre/Madre soltero/a": {
+    "regex": "single (dad|father|mom|mum|mother|parent)|padre soltero|madre soltera|single-?parent|widower romance|viud[oa] con hij",
+    "desc": "Uno de los dos cria solo a sus hijos y la relacion pasa por ellos."
+  },
+  "Dinamica · Matrimonio concertado": {
+    "regex": "arranged marriage|matrimonio (concertado|arreglado|pactado|impuesto)|forced marriage|matrimonio forzad|betrothed|prometid[oa] desde",
+    "desc": "Un tercero (familia, clan, corte) decide la boda; los novios no eligen."
+  },
+  "Dinamica · Opuestos se atraen": {
+    "regex": "opposites attract|opuestos se atraen|polos opuestos|los opuestos se",
+    "desc": "Caracteres o mundos incompatibles que acaban encajando."
+  },
+  "Dinamica · De odio a amor": {
+    "regex": "hate-?to-?love|hate to love|de odio a amor|del odio al amor|romance de odio",
+    "desc": "Se detestan al principio, sin nada grave de por medio, y acaban juntos."
+  },
+  "Dinamica · Bully romance": {
+    "regex": "bully romance|bullying romance|romance de acoso|el bully|acoso escolar",
+    "desc": "Uno acoso o humillo al otro antes del romance: es dark, no un simple pique."
+  },
+  "Dinamica · Obsesion/Stalker": {
+    "regex": "\\bstalker\\b|obsession romance|obsessive (hero|love|man)|obsesion (con|por)|obsesiv|acosador|acechador|yandere|dark obsession",
+    "desc": "Un interes amoroso obsesivo que vigila o persigue al otro."
+  },
+  "Dinamica · Posesivo/Celoso": {
+    "regex": "possessive (hero|alpha|man|love)|jealous (hero|man|alpha)|posesivo|celoso|territorial",
+    "desc": "Celos y sentido de propiedad como motor de la tension."
+  },
+  "Arquetipo · Alpha male": {
+    "regex": "alpha males?|macho alfa|alpha hero(?:es)?|alphahole|alpha billionaire|alpha husband|alpha boss|alpha bad boy|alpha bikers?|heroes? alfa|protagonista alfa",
+    "desc": "Heroe dominante y territorial de la romantica contemporanea. Es un rasgo de personaje, no un cambiaformas: «alpha male» sin manada no es Lobos/Shifters."
+  },
+  "Dinamica · Protector": {
+    "regex": "touch her and die|overprotective|fiercely protective|sobreprotector|protector nato|guardian protector",
+    "desc": "Uno se vuelca en proteger al otro de una amenaza real."
+  },
+  "Dinamica · Matrimonio en crisis/Reconciliacion": {
+    "regex": "marriage in trouble|second chance marriage|estranged (spouse|husband|wife)|matrimonio en crisis|reconciliacion de pareja|separated couple|divorciados que",
+    "desc": "Una pareja ya establecida que se rompe y vuelve a unirse."
+  },
+  "Dinamica · Amor no correspondido/Pining": {
+    "regex": "\\bpining\\b|unrequited (love|crush)|amor no correspondido|amor secreto|secret crush|longing for",
+    "desc": "Uno quiere al otro en silencio durante mucho tiempo."
+  },
+  "Dinamica · Age gap": {
+    "regex": "age gap|older man|diferencia de edad|hombre mayor",
+    "desc": "Diferencia de edad notable entre los protagonistas."
+  },
+  "Tono · Oscuro": {
+    "regex": "dark romance|romance oscuro|dark fantasy|grimdark",
+    "desc": "Dark romance o dark fantasy: violencia, moral turbia y temas duros sin edulcorar."
+  },
+  "Tono · Picante/Erotico": {
+    "regex": "spicy|steamy|erotic|erotico|explicit|subido de tono|smut|sensual",
+    "desc": "Escenas de sexo explicitas y frecuentes."
+  },
+  "Tono · Cozy/Ligero": {
+    "regex": "\\bcozy\\b|\\bcosy\\b|feel-?good|heartwarming|wholesome",
+    "desc": "Amable, calido y de bajo riesgo: nada malo de verdad llega a pasar. No implica humor."
+  },
+  "Tono · Gotico": {
+    "regex": "gothic|gotic",
+    "desc": "Atmosfera opresiva, casa o paisaje siniestro y secretos familiares."
+  },
+  "Tono · Morally grey/Antiheroe": {
+    "regex": "morally (grey|gray)|moralmente gris|antiheroe|anti-?hero|villain romance|villano romantico|morally complex",
+    "desc": "Protagonista de moral ambigua, o villano al que se sigue."
+  },
+  "Tono · Sin escenas/Sweet": {
+    "regex": "clean romance|sweet romance|closed-?door|sin escenas (explicit|de sexo)|romance dulce|wholesome romance|fade to black|low (heat|spice)|sin contenido sexual",
+    "desc": "Romance sin escenas de sexo explicitas."
+  },
+  "Tono · Angst/Drama emocional": {
+    "regex": "\\bangst\\b|angsty|tearjerker|te hara llorar|desgarrador|lacrimogen|all the feels|heartbreaking|emotional rollercoaster|drama emocional",
+    "desc": "Sufrimiento emocional intenso; el libro busca hacer llorar."
+  },
+  "Arquetipo · Mafia": {
+    "regex": "\\bmafia\\b|bratva|cartel|mob boss",
+    "desc": "El crimen organizado es el mundo de los protagonistas."
+  },
+  "Arquetipo · Billonario/CEO": {
+    "regex": "billionaire|multimillonario|millonario|\\bceo\\b",
+    "desc": "Protagonista inmensamente rico o al mando de una empresa."
+  },
+  "Arquetipo · Deportistas": {
+    "regex": "sports romance|hockey romance|football romance|romance deportivo|hockey player|quarterback|jugador de (hockey|futbol|baloncesto)|\\bnhl\\b|\\bnfl\\b|soccer romance|baseball romance|mma fighter",
+    "desc": "Deportista profesional o universitario."
+  },
+  "Arquetipo · Moteros/MC": {
+    "regex": "motorcycle club|biker romance|\\bmc romance\\b|moteros?|club de moteros|biker gang|outlaw biker",
+    "desc": "Club de moteros fuera de la ley."
+  },
+  "Arquetipo · Militar/SEAL": {
+    "regex": "military romance|navy seal|\\bnavy seals\\b|romance militar|special forces|fuerzas especiales|veterano de guerra|ex-?militar|ex-?soldado",
+    "desc": "Militar en activo, fuerzas especiales o veterano de guerra."
+  },
+  "Arquetipo · Vaquero/Western": {
+    "regex": "\\bcowboys?\\b|vaquero|western romance|romance del oeste|\\branch\\b|rancho|rodeo|ranchero",
+    "desc": "Rancho, rodeo y oeste americano."
+  },
+  "Arquetipo · Realeza": {
+    "regex": "royal romance|royalty romance|prince(ss)? romance|principe(?!s? azul)|(?<!mi )(?<!su )princesa|realeza|romance real|crown prince|heredero al trono",
+    "desc": "Reyes, principes o herederos de una casa real. El «principe azul» o llamar «princesa» a la protagonista no cuenta."
+  },
+  "Arquetipo · Guardaespaldas": {
+    "regex": "bodyguard|guardaespaldas|escolta|personal protection|romance de guardaespaldas",
+    "desc": "Uno protege profesionalmente al otro."
+  },
+  "Arquetipo · Medico/Hospital": {
+    "regex": "medical romance|doctor romance|nurse romance|romance medico|enfermer[oa]|cirujano|surgeon romance|hospital romance",
+    "desc": "Personal sanitario y entorno hospitalario."
+  },
+  "Arquetipo · Rockstar/Celebridad": {
+    "regex": "rock ?star|celebrity romance|estrella de rock|romance con famos|celebridad|popstar|fame romance",
+    "desc": "Musico famoso, actor o figura publica."
+  },
+  "Arquetipo · Bombero": {
+    "regex": "firefighter|fireman|bombero|first responder romance",
+    "desc": "Bomberos y servicios de emergencia."
+  },
+  "Arquetipo · Bad boy": {
+    "regex": "bad boy|chico malo|chico rebelde|tattooed (hero|bad boy)|reformed bad boy",
+    "desc": "Chico rebelde, con pasado o mala reputacion."
+  },
+  "Ambientacion · Campus universitario": {
+    "regex": "college romance|university romance|campus romance|romance universitario|fraternity|sorority|professor.{0,12}student|vida universitaria",
+    "desc": "La historia transcurre en la universidad: clases, residencia, fraternidades."
+  },
+  "Publico · New adult": {
+    "regex": "new adult|\\bna romance\\b",
+    "desc": "Protagonistas de 18 a 25 anos estrenando vida adulta. Es una franja de edad, no un escenario."
+  },
+  "Paranormal · Vampiros": {
+    "regex": "vampire|vampir|vampiro",
+    "desc": "Vampiros."
+  },
+  "Paranormal · Lobos/Shifters": {
+    "regex": "werewolf|werewolves|shifter|hombre lobo|hombres lobo|cambiaform|omegaverse|licantrop|\\bwolf\\b|\\bwolves\\b|(?<!nino )lobos?(?! de mar)(?! solitario)(?! solitaria)|rejected mate|mate bond|pack dynamics|vinculo de companer|\\bmanada\\b|alpha (?:wolf|wolves|shifter|male shifter|werewolf)|pack alpha|alphas? of the pack|lobo alfa|alfa de (?:la )?manada|(?:bear|lion|dragon|tiger) alpha|alpha (?:bear|lion|tiger)",
+    "desc": "Licantropos y cambiaformas de cualquier animal: manada, alfa de manada, vinculo de companeros. El «alpha male» de la romántica contemporánea NO es un cambiaformas."
+  },
+  "Paranormal · Dragones": {
+    "regex": "dragon",
+    "desc": "Dragones, jinetes de dragones o dragon que toma forma humana."
+  },
+  "Paranormal · Brujas/Magos": {
+    "regex": "\\bwitch|\\bbruja|wizard|\\bmagos?\\b|hechicer",
+    "desc": "Brujas, magos y hechiceria."
+  },
+  "Paranormal · Fae/Feerico": {
+    "regex": "\\bfaes?\\b|faerie|feeric|fairy court|\\belf\\b|(?<!santas )\\belves\\b|elfo|(?<!tooth )fairy(?! ?tales?)(?! godmother)|fairies|\\bhada\\b|(?<!cuento de )(?<!cuentos de )\\bhadas\\b|pixie(?! cut)|\\bduendes\\b|druid",
+    "desc": "Hadas, elfos y la corte feerica como criaturas de la historia. Un «cuento de hadas» o un retelling NO basta: eso es Retelling de cuento."
+  },
+  "Paranormal · Fated mates": {
+    "regex": "fated mate|destined mate|\\bfated\\b|companero destinado|almas gemelas|alma gemela|soul ?mate|rejected mate|sire bond|vinculo de sire",
+    "desc": "Vinculo predestinado por las reglas del mundo sobrenatural, no un simple flechazo."
+  },
+  "Paranormal · Omegaverse": {
+    "regex": "omegaverse|omega verse|a/b/o|alpha beta omega|alpha/omega|celo del omega|\\bmpreg\\b|alpha king|\\balphas?\\b(?! and the omega)[^.]{0,70}\\bomegas?\\b|\\bomegas?\\b[^.]{0,70}\\balphas?\\b",
+    "desc": "Jerarquia alfa/beta/omega, celos, vinculos y mpreg. Un «alpha» solo, sin omega ni jerarquia, no basta."
+  },
+  "Paranormal · Angeles y demonios": {
+    "regex": "angel romance|demon romance|angeles y demonios|demonios y angeles|fallen angels?|angel(?:es)? caid[oa]s?|guardian angels?|angel(?:es)? guardian(?:es)?|romance con un demonio|nephilim|nefilim|arcangel|serafin|cazador[ae]?s? de demonios|demon hunters?|(?:principe|rey|senor|reina) de los (?:demonios|infiernos)|semidemonio|posesion demoniaca|pacto con el diablo|(?<!los )\\bangeles\\b|(?<!un )(?<!mi )(?<!su )(?<!el )(?<!como un )\\bangels?\\b|\\bdemons?\\b|(?<!que )(?<!como )(?<!donde )(?<!cual )\\bdemonios?\\b",
+    "desc": "Angeles, caidos, demonios, nefilim y arcangeles como criaturas de la historia. NO cuenta el uso figurado: la ciudad de Los Angeles, «que demonios» o llamar «angel» a una persona."
+  },
+  "Paranormal · Sirenas": {
+    "regex": "\\bmermaids?\\b|\\bmerm(an|en)\\b|\\bsirenas?\\b(?! de (?:la |los )?(?:policia|ambulancia|bomberos|alarma|guerra|niebla|coches|barcos?|fabrica))(?! antiaerea)|selkie|romance bajo el mar",
+    "desc": "Sirenas, tritones y selkies como criaturas. La sirena de la policia o de una ambulancia no cuenta."
+  },
+  "Paranormal · Romance de monstruos": {
+    "regex": "monster romance|monster boyfriend|romance de monstruos|minotaur romance|orc romance|\\btentacle\\b|romance con un monstruo|monster love interest|interes amoroso monstruo",
+    "desc": "La pareja es una criatura monstruosa (orco, minotauro, tentaculos), no un vampiro ni un licantropo."
+  },
+  "Ambientacion · Small town": {
+    "regex": "small town|pueblo pequeno|small-town",
+    "desc": "Pueblo pequeno donde todos se conocen."
+  },
+  "Ambientacion · Regencia": {
+    "regex": "regency|regencia",
+    "desc": "Inglaterra de la Regencia (1811-1820)."
+  },
+  "Ambientacion · Victoriano": {
+    "regex": "victorian|victoriano|epoca victoriana",
+    "desc": "Epoca victoriana o eduardiana."
+  },
+  "Ambientacion · Corte/Intriga palaciega": {
+    "regex": "court intrigue|royal court|intriga palaciega|intrigas de la corte|juego de tronos",
+    "desc": "Intrigas de una corte o un palacio."
+  },
+  "Ambientacion · Navideno/Festivo": {
+    "regex": "christmas romance|holiday romance|navideno|navidad|festivo|winter romance|hallmark|romance de navidad|halloween romance|holidays?|\\bchristmas\\b",
+    "desc": "La Navidad u otra festividad como marco."
+  },
+  "Ambientacion · Highlander/Escoces": {
+    "regex": "highlander|highland romance|scottish romance|escoces|\\bkilt\\b|tierras altas|clan macleod",
+    "desc": "Tierras Altas de Escocia y sus clanes."
+  },
+  "Ambientacion · Piratas": {
+    "regex": "\\bpirate\\b|\\bpiratas?\\b|corsario|bucanero|high seas|capitan pirata",
+    "desc": "Piratas y corsarios."
+  },
+  "Ambientacion · Espacial/Space opera": {
+    "regex": "space opera|espacial|spaceship|nave espacial|estacion espacial|interestelar|space battles?|space marines?|space exploration",
+    "desc": "Naves, estaciones y viaje interestelar como escenario."
+  },
+  "Ambientacion · Academia magica": {
+    "regex": "magic school|magic academy|academia magica|academy of magic|escuela de magia|escuela de magos|colegio de magia|academia de magia|escuela de hechiceria|colegio de magos",
+    "desc": "Escuela o universidad donde se ensena MAGIA."
+  },
+  "Ambientacion · Internado/Academia": {
+    "regex": "boarding school|internado|assassin academy|academia de asesinos|spy academy|academia de espias|academia militar",
+    "desc": "Internado o academia (militar, de asesinos, de espias) SIN magia."
+  },
+  "Tono · Dark academia": {
+    "regex": "dark academia",
+    "desc": "Estetica de campus elitista, secretos, obsesion academica y algun muerto. NO requiere magia."
+  },
+  "Ambientacion · Viaje en el tiempo": {
+    "regex": "time travel|viaje en el tiempo|time-?slip|time traveler|viajer[oa] del tiempo|portal al pasado",
+    "desc": "Los personajes se desplazan a otra epoca."
+  },
+  "Ambientacion · Casa encantada": {
+    "regex": "haunted house|casa encantada|embrujad|poltergeist|casa maldita|mansion encantada",
+    "desc": "Un edificio embrujado es el centro de la trama."
+  },
+  "Paranormal · Fantasmas": {
+    "regex": "ghost story|\\bghosts?\\b|fantasma|espectro|aparicion fantasmal|presencia paranormal|espiritu del difunto|\\bespiritus?\\b",
+    "desc": "Fantasmas o presencias de un difunto, esten donde esten."
+  },
+  "Subgenero · Distopia": {
+    "regex": "dystopia|distopia|distopic|sociedad distopica|regimen totalitario",
+    "desc": "Sociedad opresiva y organizada: el foco es el sistema, no la catastrofe."
+  },
+  "Subgenero · Apocaliptico/Postapocaliptico": {
+    "regex": "post-?apocali|apocalyptic|apocalipsis|fin del mundo|\\bapocalypse\\b|postapocalip",
+    "desc": "La civilizacion cae o ya cayo: el foco es sobrevivir entre las ruinas."
+  },
+  "Subgenero · Fantasia urbana": {
+    "regex": "urban fantasy|fantasia urbana|paranormal and urban|paranormal urban",
+    "desc": "Magia y criaturas ocultas en una ciudad real, con el foco en la ACCION o la investigacion, no en el romance (Dresden, Rios de Londres)."
+  },
+  "Subgenero · Fantasia epica": {
+    "regex": "epic fantasy|high fantasy|alta fantasia|epic quest|sword (and|&) sorcery|espada y brujeria",
+    "desc": "Mundo secundario amplio, con viaje o guerra de gran escala."
+  },
+  "Subgenero · Cozy mystery": {
+    "regex": "cozy mystery|cosy mystery|misterio acogedor",
+    "desc": "Misterio amable, sin violencia explicita, con detective aficionada en un pueblo."
+  },
+  "Subgenero · Thriller psicologico": {
+    "regex": "psychological thriller|thriller psicologic|psicologic",
+    "desc": "La tension esta en la mente: narrador poco fiable, manipulacion, duda sobre lo real."
+  },
+  "Subgenero · Policiaco/Detective": {
+    "regex": "\\bdetective|police procedural|policiac|homicidios|brigada|inspector|\\bcrime\\b|policial|women sleuths|whodunit|asesinato|murder mystery|women sleuths?|women (private )?investigators?|mujer detective|\\bsleuth|private investigator|amateur sleuth|cold case|caso frio|female sleuth|\\bpolice\\b|closed circle|circulo cerrado de sospechosos",
+    "desc": "Investigacion de un crimen ya cometido por un policia o un detective."
+  },
+  "Subgenero · Zombis": {
+    "regex": "zombie|zombi|no muertos|muertos vivientes|infectados|walkers",
+    "desc": "Muertos que caminan y contagian. Otros no-muertos (vampiros, liches) tienen su propio tema."
+  },
+  "Subgenero · Romance alienigena/Sci-fi": {
+    "regex": "alien romance|sci-?fi romance|romance alienigena|romance extraterrestre|space romance|romance espacial|romance de ciencia ficcion",
+    "desc": "El interes amoroso es alienigena o el escenario es de ciencia ficcion."
+  },
+  "Publico · Young adult/Juvenil": {
+    "regex": "young adult|literatura juvenil|novela juvenil|para adolescentes|\\bya fantasy\\b|\\bya romance\\b",
+    "desc": "Protagonistas adolescentes y publico juvenil."
+  },
+  "Tono · Coming of age": {
+    "regex": "coming of age|coming-of-age|novela de aprendizaje|bildungsroman|mayoria de edad",
+    "desc": "El arco del libro es crecer y madurar; puede darse en cualquier genero."
+  },
+  "Subgenero · LitRPG/GameLit": {
+    "regex": "litrpg|gamelit|\\bvrmmo\\b|dungeon core|system apocalypse|leveling up|game world",
+    "desc": "Mecanicas de videojuego dentro de la ficcion: niveles, estadisticas, sistema."
+  },
+  "Subgenero · Fantasia progresiva/Cultivo": {
+    "regex": "cultivation|xianxia|\\bwuxia\\b|progression fantasy|fantasia progresiva|cultivo de qi",
+    "desc": "El protagonista sube de poder por etapas; xianxia y wuxia."
+  },
+  "Subgenero · Espionaje/Espias": {
+    "regex": "spy thriller|spy romance|espionage|espionaje|\\bespias?\\b|secret agent|agente secreto|\\bcia\\b|\\bmi6\\b|\\bkgb\\b|double agent|agente doble",
+    "desc": "Servicios de inteligencia, agentes y traiciones."
+  },
+  "Subgenero · Thriller legal": {
+    "regex": "legal thriller|courtroom|sala del tribunal|sala de vistas|banquillo de los acusados|jurado popular|(?:ir|va|fue|llevar|llevarla|llevarlo) a juicio|a juicio por|juicio oral|juicio (?:por|penal|civil|militar|sumarisimo|al|contra)|abogad[oa]|fiscal (del|de distrito)|district attorney|tribunal(?:es)? (?:de justicia|supremo|penal|superior|militar|de menores|de primera instancia)|\\btribunales\\b|ante el tribunal|thriller juridico",
+    "desc": "Juicios, abogados y tribunales como motor de la trama. No cuenta el «juicio» como opinion o cordura, ni el «juicio final»."
+  },
+  "Subgenero · Terror cosmico/Lovecraft": {
+    "regex": "lovecraft|cosmic horror|terror cosmico|eldritch|cthulhu|horror cosmico",
+    "desc": "Horror ante lo incomprensible; entidades ajenas a la escala humana."
+  },
+  "Subgenero · Supervivencia": {
+    "regex": "survival story|survival thriller|supervivencia|wilderness survival|naufrag|stranded|perdidos en la|lucha por sobrevivir",
+    "desc": "Sobrevivir a un medio hostil (naufragio, montana, aislamiento)."
+  },
+  "Subgenero · Heist/Atraco": {
+    "regex": "\\bheist\\b|atraco|robo del siglo|golpe maestro|dar el golpe|banda de ladrones",
+    "desc": "Un golpe planeado por un equipo."
+  },
+  "Subgenero · Estafa/Con artist": {
+    "regex": "con artist|estafador|timador|\\bestafa\\b|\\btimo\\b|grifter|enganar a la victima",
+    "desc": "Se roba con la palabra, no con la fuerza: enganos, timos y suplantaciones."
+  },
+  "Subgenero · Belica/Guerra": {
+    "regex": "war novel|novela belica|segunda guerra mundial|primera guerra mundial|\\bwwii\\b|\\bwwi\\b|guerra civil|frente de batalla|trinchera",
+    "desc": "La guerra como escenario central."
+  },
+  "Subgenero · Science fantasy": {
+    "regex": "science ?fantasy|science-fantasy|fantasia cientifica|ciencia fantasia|space fantasy|fantasia espacial|espada laser|energia mistica heredada",
+    "desc": "Tecnologia y poder mistico conviviendo en el mismo mundo (regla 3b del prompt)."
+  },
+  "Subgenero · Steampunk": {
+    "regex": "steampunk|steam ?punk|clockpunk|dieselpunk|retrofuturis|\\bairships?\\b|dirigibles? (de vapor|y engranajes)|\\bautomatas?\\b|\\bautomatons?\\b|engranajes y vapor|era del vapor",
+    "desc": "Vapor, engranajes, dirigibles y automatas: tecnologia anacronica sin magia."
+  },
+  "Subgenero · Postcolapso con magia": {
+    "regex": "postcolapso con magia|post-?colapso con magia|magia tras el (colapso|apocalipsis)|post-?apocalyptic fantasy|postapocalyptic fantasy|dying earth|tierra moribunda|tecnologia (antigua |olvidada )?como (leyenda|religion|magia)|magic returns|la magia (regresa|vuelve|despierta)",
+    "desc": "Tras la caida, la magia reaparece o la tecnologia antigua se trata como leyenda (regla 3d)."
+  },
+  "Subgenero · Poder alienigena": {
+    "regex": "alien powers?|poder(es)? alienigenas?|alien (heritage|dna|hybrid|species)|adn alienigena|linaje alienigena|hibrid[oa] (alienigena|extraterrestre)|half-?alien|medio alienigena|descend(iente|ientes) de (alienigenas|extraterrestres)|especie alienigena|sangre alienigena",
+    "desc": "El poder viene de SER de otra especie, no de un linaje humano sin explicar (regla 3f)."
+  },
+  "Subgenero · Superpoderes": {
+    "regex": "superpowers?|superpoderes|superhero|superheroe|\\bmutant\\b|poderes sobrehumanos|telepath|telepat|super ?powers?|psychic|psiquic|poderes psiquicos|inherited powers|poderes heredados|cardinal power|mind control|control mental|precognition|super ?hero(es)?",
+    "desc": "Poderes sobrehumanos o psiquicos, con o sin capa."
+  },
+  "Representacion · LGBTQ+ (MM)": {
+    "regex": "mm romance|m/m romance|gay romance|\\bmlm\\b|boys'? love|\\bbl manhwa\\b|romance gay",
+    "desc": "La pareja protagonista son dos hombres."
+  },
+  "Representacion · LGBTQ+ (FF)": {
+    "regex": "ff romance|f/f romance|lesbian|sapphic|girls'? love|romance lesbico",
+    "desc": "La pareja protagonista son dos mujeres."
+  },
+  "Tono · Trauma/Salud mental": {
+    "regex": "\\bptsd\\b|post.?traumatic|estres postraumatico|emotional (trauma|breakdown)|trauma emocional|mental (illness|health)|salud mental|enfermedad mental|mentally ill|(?<!great )depression|(?<!gran )depresion|anxiety|ansiedad|psychiatric|psiquiatric|psychopatholog|multiple personality|\\bgrief\\b|(?<!en un )(?<!en )\\bduelo\\b(?! a muerte)(?! singular)(?! de espadas)(?! a pistola)|bereavement|\\btherapy\\b|terapia|\\baddictions?\\b|(?<!crea )(?<!crean )(?<!genera )\\badiccion(?:es)?\\b|drug abuse|abuso de drogas|death (and|&) dying",
+    "desc": "Trauma, duelo, adiccion o enfermedad mental con peso real en la trama. No cuenta la Gran Depresion de 1929, el duelo a espada ni «crea adiccion» como reclamo."
+  },
+  "Subgenero · Asesino en serie": {
+    "regex": "serial killers?|asesin[oa]s? en serie",
+    "desc": "Un asesino en serie es el motor de la trama."
+  },
+  "Tono · Cautiverio/Trata": {
+    "regex": "human trafficking|trata de (personas|blancas)|kidnapp|secuestr|abduction|captivity|cautiverio|held captive|sex slave|esclava sexual",
+    "desc": "Secuestro, cautiverio o trata de personas."
+  },
+  "Subgenero · Pandemia/Plaga": {
+    "regex": "pandemic|pandemia|\\bplagues?\\b|\\bplaga\\b|epidemic|epidemia|outbreak|influenza|biological weapons?|armas? biologicas?",
+    "desc": "Epidemia, contagio o arma biologica."
+  },
+  "Subgenero · Horror de criaturas": {
+    "regex": "dinosaurs?|dinosaurio|megalodon|\\bsharks?\\b|tiburon|giant (anaconda|shark|spider|crocodile|snake)|creature feature|kaiju|prehistoric",
+    "desc": "Un animal o criatura enorme como amenaza (tiburon, kaiju, dinosaurio)."
+  },
+  "Subgenero · Paranormal romance": {
+    "regex": "paranormal romance|romance paranormal",
+    "desc": "Sobrenatural en la Tierra reconocible con el ROMANCE como eje: vampiros, licantropos, angeles. La rama mas comercial del paranormal."
+  },
+  "Subgenero · Paranormal sin romance": {
+    "regex": "$^",
+    "desc": "Sobrenatural en la Tierra reconocible SIN romance central: cazadores, detectives, mitologia viva."
+  },
+  "Subgenero · Mundo inventado sin magia": {
+    "regex": "$^",
+    "desc": "Reino o pais ficticio sin magia ni ciencia relevantes (realeza inventada, sociedad de castas)."
+  },
+  "Subgenero · Gaslamp fantasy": {
+    "regex": "gaslamp|gas lamp fantasy|fantasia victoriana|ocultismo victoriano",
+    "desc": "Magia u ocultismo REAL en una epoca historica reconocible, tipo Londres victoriano."
+  },
+  "Subgenero · Portal fantasy": {
+    "regex": "portal fantasy|\\bisekai\\b|transportad[oa] a otro mundo|cruzar a otro mundo",
+    "desc": "Alguien de nuestro mundo cruza a otro y la trama transcurre alli."
+  },
+  "Subgenero · Cozy fantasy": {
+    "regex": "cozy fantasy|cosy fantasy|fantasia acogedora",
+    "desc": "Fantasia amable y de bajo riesgo: una tienda, una taberna, una comunidad."
+  },
+  "Subgenero · Novela negra/Hardboiled": {
+    "regex": "novela negra|hard.?boiled|\\bnoir\\b|roman noir|detective desencantado",
+    "desc": "Crimen sordido, detective desencantado y ciudad corrupta."
+  },
+  "Subgenero · Novela historica": {
+    "regex": "novela historica|historical fiction|ficcion historica|reconstruccion historica",
+    "desc": "Reconstruye una epoca real SIN romance central; si el romance manda, es Romance historico."
+  },
+  "Subgenero · Terror sobrenatural": {
+    "regex": "supernatural horror|terror sobrenatural|horror sobrenatural|terror paranormal|horror paranormal|paranormal horror|posesion demoniaca|posesion de un espiritu|exorcis|endemoniad|poseida por",
+    "desc": "El terror paranormal: el miedo viene de algo imposible y el libro lo confirma (fantasmas, posesion, maldicion)."
+  },
+  "Subgenero · Terror realista": {
+    "regex": "slasher|home invasion|survival horror|terror psicologico|psychological horror",
+    "desc": "El miedo viene de lo humano o lo natural: asesinos, sectas, encierro. Nada sobrenatural."
+  },
+  "Subgenero · Folk horror": {
+    "regex": "folk horror|terror folclorico|culto rural|paganismo rural",
+    "desc": "Comunidad rural aislada, culto antiguo y ritual; el forastero como victima."
+  },
+  "Subgenero · Thriller domestico": {
+    "regex": "domestic thriller|domestic noir|thriller domestico|matrimonio con secretos",
+    "desc": "La amenaza esta dentro de casa: pareja, familia, vecinos."
+  },
+  "Subgenero · Techno-thriller": {
+    "regex": "techno-?thriller|tecno-?thriller|thriller tecnologico|thriller cientifico",
+    "desc": "Tension a partir de tecnologia o ciencia plausible."
+  },
+  "Subgenero · Comedia romantica": {
+    "regex": "romantic comedy|comedia romantica|\\bromcom\\b|rom-?com|romance divertido|humor romantico|romance con humor",
+    "desc": "Romance en clave de humor: enredo, dialogo agil y final feliz garantizado."
+  },
+  "Subgenero · Misterio paranormal": {
+    "regex": "paranormal mystery|paranormal cozy|cozy paranormal|misterio paranormal|witch mystery|bruja detective|medium detective|psychic detective|detective psiquic|misterio con magia",
+    "desc": "El CRIMEN manda y lo sobrenatural es un don puntual de quien investiga (medium, bruja tendera) en un mundo por lo demas normal."
+  },
+  "Subgenero · Romantic suspense": {
+    "regex": "romantic suspense|suspense romantico|romance de suspense|romantic thriller|thriller romantico",
+    "desc": "Romance central + una amenaza real (acosador, crimen, peligro fisico) que empuja la trama."
+  },
+  "Subgenero · Chick lit": {
+    "regex": "chick lit|chicklit|chick-lit|novela femenina|literatura femenina",
+    "desc": "Voz ligera y urbana en primera persona: trabajo, amigas y busqueda de pareja."
+  },
+  "Ambientacion · Verano/Playa": {
+    "regex": "beach read|summer romance|romance de verano|lectura de playa|verano en la playa|vacaciones de verano",
+    "desc": "Vacaciones, playa o pueblo costero como marco del verano."
+  },
+  "Dinamica · Venganza": {
+    "regex": "revenge romance|romance de venganza|\\bvenganza\\b|revenge plot|vendetta",
+    "desc": "Uno se acerca al otro para vengarse y el plan se le va de las manos."
+  },
+  "Arquetipo · Nerd/Geek": {
+    "regex": "nerd romance|geek romance|\\bnerds?\\b|\\bgeeks?\\b|\\bfrikis?\\b|cientifica timida",
+    "desc": "Protagonista nerd o geek: ciencia, videojuegos, comics."
+  },
+  "Subgenero · Cyberpunk": {
+    "regex": "cyberpunk|ciberpunk|neuromante|implantes neuronales|megacorporaciones",
+    "desc": "Alta tecnologia y bajo nivel de vida: redes, implantes y megacorporaciones."
+  },
+  "Subgenero · Hard science fiction": {
+    "regex": "hard science fiction|hard sci-?fi|\\bhard sf\\b|rigor cientifico|ciencia dura",
+    "desc": "La ciencia es rigurosa y central; la trama sale de resolver el problema fisico."
+  },
+  "Subgenero · Military SF": {
+    "regex": "military sci-?fi|military science fiction|\\bmilitary sf\\b|marines espaciales|space marines?|flota estelar|guerra interestelar",
+    "desc": "Ejercitos, flotas y campanas militares en el espacio."
+  },
+  "Subgenero · Primer contacto": {
+    "regex": "first contact|primer contacto|contacto con una especie|llegada de los alienigenas",
+    "desc": "El encuentro inicial entre la humanidad y otra especie."
+  },
+  "Subgenero · Bucle temporal": {
+    "regex": "time loop|bucle temporal|dia de la marmota|groundhog day|repetir el mismo dia|revive el mismo dia",
+    "desc": "El protagonista repite el mismo periodo de tiempo una y otra vez."
+  },
+  "Subgenero · Multiverso": {
+    "regex": "multiverse|multiverso|universos paralelos|realidades paralelas|mundos paralelos|lineas temporales",
+    "desc": "Varias realidades o lineas temporales coexisten y se cruzan."
+  },
+  "Subgenero · Biopunk": {
+    "regex": "biopunk|ingenieria genetica|manipulacion genetica|genetic engineering|editar el genoma",
+    "desc": "Biotecnologia y manipulacion genetica como motor del conflicto."
+  },
+  "Subgenero · Solarpunk": {
+    "regex": "solarpunk|hopepunk|futuro sostenible|utopia ecologica",
+    "desc": "Futuro ecologico y esperanzado: sostenibilidad y comunidad en vez de distopia."
+  },
+  "Subgenero · Mitologia griega": {
+    "regex": "mitologia griega|greek mythology|dioses del olimpo|\\bolimpo\\b|hades y persefone|greek gods|semidios",
+    "desc": "Dioses, heroes y monstruos del panteon griego."
+  },
+  "Subgenero · Mitologia nordica": {
+    "regex": "mitologia nordica|norse mythology|\\bvikingos?\\b|\\bviking\\b|\\bodin\\b|\\bloki\\b|\\bragnarok\\b|\\bvalhalla\\b",
+    "desc": "Dioses y sagas del panteon nordico; vikingos."
+  },
+  "Subgenero · Retelling de cuento": {
+    "regex": "retelling|reimagining|fairy tale retelling|cuento de hadas reinventado|version de un cuento clasico|reescritura del cuento",
+    "desc": "Reescritura de un cuento, mito o clasico conocido."
+  },
+  "Subgenero · Realismo magico": {
+    "regex": "realismo magico|magical realism|lo magico como cotidiano",
+    "desc": "Lo fantastico se cuela en lo cotidiano sin que nadie lo cuestione."
+  },
+  "Subgenero · Saga familiar": {
+    "regex": "saga familiar|family saga|novela generacional|tres generaciones|drama familiar",
+    "desc": "Varias generaciones de una familia a lo largo del tiempo."
+  },
+  "Subgenero · Autoficcion": {
+    "regex": "autoficcion|autofiction|novela autobiografica|autobiographical novel",
+    "desc": "El autor se novela a si mismo: frontera entre memoria y ficcion."
+  },
+  "Tono · Humor": {
+    "regex": "\\bhumor\\b|humoristic|comic novel|novela comica|\\bsatira\\b|\\bsatire\\b|parodia|desternillante|carcajada",
+    "desc": "Escrito para hacer reir: comedia, satira o parodia."
+  },
+  "Nofic · Biografia/Memorias": {
+    "regex": "$^",
+    "desc": "La vida de una persona REAL contada por ella o por otro. No vale una novela sobre un personaje historico."
+  },
+  "Nofic · Autoayuda": {
+    "regex": "$^",
+    "desc": "Metodo o consejo practico para que el lector mejore algo de su vida."
+  },
+  "Nofic · Divulgacion cientifica": {
+    "regex": "$^",
+    "desc": "Explica ciencia real a un publico general; no es una novela con ciencia dentro."
+  },
+  "Nofic · Historia": {
+    "regex": "$^",
+    "desc": "Ensayo o divulgacion sobre un hecho historico REAL. Si es una novela ambientada en esa epoca, NO es esto."
+  },
+  "Nofic · Negocios": {
+    "regex": "$^",
+    "desc": "Empresa, gestion, emprendimiento o dinero, como manual o ensayo."
+  },
+  "Nofic · Cocina": {
+    "regex": "$^",
+    "desc": "Recetario o libro de gastronomia. Una novela con una pasteleria dentro NO es esto."
+  },
+  "Nofic · Viajes": {
+    "regex": "$^",
+    "desc": "Cronica o guia de un viaje real."
+  },
+  "Nofic · Espiritualidad": {
+    "regex": "$^",
+    "desc": "Practica espiritual, meditacion o religion vivida, como guia o testimonio."
+  }
 }

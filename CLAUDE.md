@@ -8,7 +8,7 @@ la corrupcion por sincronizacion en la nube).
 
 | Carpeta              | Nombre Calibre       | Version | ZIP maestro (en dist/)      |
 |----------------------|----------------------|---------|-----------------------------|
-| book_classifier      | Book Classifier      | 3.4.1   | dist/BookClassifier.zip     |
+| book_classifier      | Book Classifier      | 3.20.0  | dist/BookClassifier.zip     |
 | ebook_comparator     | Ebook Comparator     | 2.9.5   | dist/EbookComparator.zip    |
 | fix_metadata         | Fix Metadata         | 1.7.4   | dist/FixMetadata.zip        |
 | extract_metadata     | Extract Metadata     | 1.3.2   | dist/ExtractMetadata.zip    |
@@ -130,6 +130,64 @@ docstring decia lo contrario del codigo. Las tres cosas usan ya `_keep_key`.
   informe suelto acabo dentro del ZIP (ya excluye `duplicados_*` y `*.plan.json`).
 - `--epub-only` omite los AZW3, que hay que convertir con `ebook-convert` y son
   el coste dominante del escaneo. El resumen de tiempos por formato lo cuantifica.
+
+## Herramienta fuera de Calibre: cambiar el TIPO de una columna
+
+`scripts/convert_column.py` (lanzador `convertir_columna.cmd`) convierte una
+columna personalizada de un tipo a otro CONSERVANDO los valores. Motivo: el
+`#subtitle` de Yolanda se creo como *Long text, like comments* y el dialogo de
+revision de Fix Metadata lo pinta como un editor enorme; se quiere *Text,
+column shown in the Tag browser*. Calibre **no permite cambiar el tipo** de una
+columna existente, ni por la interfaz ni por la API.
+
+    convertir_columna.cmd --list-libraries              bibliotecas conocidas
+    convertir_columna.cmd --list                        ver columnas y tipos
+    convertir_columna.cmd --column subtitle --dry-run   ensayo, no toca nada
+    convertir_columna.cmd --column subtitle             hacerlo
+    convertir_columna.cmd --column subtitle --to comments   vuelta atras
+    convertir_columna.cmd --restore "columnas_out\subtitle_XXX.json"
+
+- La biblioteca se da por **NOMBRE** o por ruta: `-l "Mi Biblioteca"`. Los
+  nombres salen de `library_usage_stats` en el `gui.json` de Calibre (lo que
+  llena "Cambiar biblioteca") mas la abierta ahora, y de `--root` si se pasa.
+  La busqueda es exacta -> empieza por -> contiene, y **aborta si hay empate**
+  en vez de elegir. `--all-libraries` lo aplica a todas.
+- Es **generico**: vale para cualquier columna de un solo valor (`#serie_gen`,
+  `#world`...). Aborta si la columna es de valores multiples.
+- Secuencia: exporta a JSON -> respalda `metadata.db` -> borra la columna ->
+  la recrea con el tipo pedido (mismo nombre visible) -> reescribe los valores
+  -> **verifica** reabriendo la biblioteca y comparando valor a valor.
+- **ESCRIBE en la biblioteca**: exige la INTERFAZ de Calibre cerrada
+  (`--force-running` lo salta). Solo bloquea `calibre.exe`: los *calibre worker
+  process* (`calibre-parallel.exe`) que quedan sueltos tras cerrar Calibre no
+  tienen la biblioteca abierta, asi que solo se avisa de ellos. Contarlos como
+  "Calibre abierto" impedia trabajar sin motivo.
+- Las rutas se limpian de espacios y comillas sobrantes: `--root " C:\Libros"`
+  (con el espacio dentro de las comillas, facil en PowerShell) dejaba de ser
+  absoluta y se resolvia contra la carpeta actual.
+- `--root` sin `--library`: si bajo la raiz hay UNA biblioteca, se usa; si hay
+  varias, las lista y pide elegir con `-l`.
+- Corre bajo `calibre-debug -e` porque necesita la API (`create_custom_column` /
+  `delete_custom_column`, que se buscan en `new_api` y, si no estan, en su
+  `backend`). Entre paso y paso **reabre la biblioteca**, porque una Cache ya
+  abierta no ve la columna recien creada.
+- El HTML de la columna comments se pasa a texto plano (`<br>` y fin de parrafo
+  -> separador `--sep`, por defecto un espacio; entidades desescapadas). **No
+  trunca**: informa de los valores de mas de 200 caracteres, que suelen ser
+  sinopsis coladas, pero los conserva enteros.
+- **Una columna `text` NO distingue mayusculas** (su tabla es
+  `UNIQUE ... COLLATE NOCASE`, como las etiquetas): 'A Novel', 'A novel' y
+  'a Novel' son el MISMO valor: una sola fila a la que APUNTAN todos esos
+  libros. Como solo cabe una grafia, la verificacion daba falsos errores.
+  Ahora se elige ANTES de escribir la del PRIMER libro que la tenia (por id,
+  estable y predecible; antes ganaba la primera escrita, que dependia del orden
+  de recorrido) y se fuerza con `rename_items()`,
+  porque `set_field()` reutiliza la fila existente sin cambiarle la grafia. La
+  verificacion informa de las diferencias de mayusculas sin darlas por error.
+- Red de seguridad doble: `columnas_out/<columna>_<fecha>.json` (en
+  `.gitignore`) con el valor bruto y el limpio de cada libro, y
+  `metadata.db.bak-<fecha>` dentro de la biblioteca. Si la reescritura falla,
+  `--restore` reimporta el JSON sin repetir el borrado.
 
 ## Regla de oro: NO usar Write/Edit sobre esta carpeta
 

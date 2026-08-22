@@ -32,6 +32,26 @@ SHELF_THRESHOLD_PCT = 30          # keep tags with >= 30% of the base
 SHELF_THRESHOLD_PCT_OF = [3, 4]   # base = average of the 3rd and 4th place tags
 SHELF_TIMEOUT = 8                 # shelves are optional enrichment; don't let them stall
 
+# Codigos HTTP que NO significan "este libro no existe", sino que el borde de
+# Goodreads (AWS WAF) o el servidor han rechazado ESTA peticion. Se reintenta.
+TRANSIENT_HTTP_CODES = frozenset((408, 425, 429, 500, 502, 503, 504))
+
+# Goodreads guarda la sinopsis por EDICION, no por obra. Es muy frecuente que la
+# ficha con mas votos (la que gana el ranking) no tenga sinopsis real -- literal
+# "Coming soon..." -- mientras que otra edicion de la MISMA obra si la tiene.
+# Caso comprobado: "Blade" de Eva Kent, obra 110186032: la ficha 85746064
+# (Kindle, 268 votos) dice "Coming soon...", y la 138295429 (Paperback) trae la
+# sinopsis completa. Cuando la nuestra no trae descripcion de verdad se mira la
+# lista de ediciones de la obra y se toma prestada la primera buena.
+WORK_EDITIONS_URL = 'https://www.goodreads.com/work/editions/{legacy_work_id}'
+EDITIONS_TIMEOUT = 8              # la lista de ediciones es opcional, no debe atascar
+MAX_SIBLING_EDITIONS = 3          # cuantas fichas hermanas se llegan a descargar
+MIN_REAL_DESCRIPTION = 60         # caracteres de texto plano para considerarla real
+PLACEHOLDER_DESCRIPTION_RE = re.compile(
+    r'^(coming soon|coming shortly|to be announced|tba|synopsis coming|'
+    r'description coming|no description|not yet available|proximamente|'
+    r'sin sinopsis|sin descripcion)\b', re.I)
+
 SHELF_MAPPINGS = {
     'adult': ['Adult'], 'adult-fiction': ['Adult'], 'adventure': ['Adventure'],
     'anthologies': ['Anthologies'], 'art': ['Art'], 'biography': ['Biography'],
@@ -127,35 +147,71 @@ class Worker(Thread):
         try:
             retry = True
             retryCount = 0
-            # Goodreads a veces devuelve una pagina sin el JSON del libro (503 /
-            # respuesta parcial). Reintentamos, pero pocas veces: 11 intentos
-            # alargaban mucho los libros irrecuperables. 3 es suficiente.
-            # Pequeno backoff antes de cada reintento (no antes del primero):
-            # si Goodreads da 503 por saturacion, esperar ayuda mas que
-            # golpear la misma URL al instante.
-            while retry and retryCount < 3:
+            # Goodreads a veces devuelve una pagina sin el JSON del libro, o un
+            # 503 del WAF de Amazon en 0,3 s (rechazo en el borde, no caida del
+            # servicio). Reintentamos, pero pocas veces: 11 intentos alargaban
+            # mucho los libros irrecuperables. 4 es suficiente.
+            # Backoff antes de cada reintento (no antes del primero): si el WAF
+            # corta, esperar ayuda mas que golpear la misma URL al instante.
+            while retry and retryCount < 4:
                 if retryCount:
-                    time.sleep(min(2.0, 0.5 * retryCount))  # 0.5 s, luego 1.0 s
+                    time.sleep(min(4.0, 1.0 * (2 ** (retryCount - 1))))  # 1 s, 2 s, 4 s
                 retryCount += 1
                 self.log('Get details attempt #%d' % retryCount)
                 retry = self.get_details()
         except Exception:
             self.log.exception('get_details failed for url: %r' % self.url)
 
+    def _http_code(self, e):
+        '''Codigo HTTP de una excepcion de mechanize/urllib, o None.'''
+        getcode = getattr(e, 'getcode', None)
+        if callable(getcode):
+            try:
+                return getcode()
+            except Exception:
+                pass
+        code = getattr(e, 'code', None)
+        return code if isinstance(code, int) else None
+
+    def _other_url_flavour(self, url):
+        '''Goodreads sirve la MISMA pagina Next.js (con su __NEXT_DATA__) en
+        /book/show/<id> y en /book/show/<id>.xml. El WAF de Amazon acepta o
+        rechaza cada variante por separado y de forma erratica, asi que cuando
+        una da 503 la otra suele responder. Alternamos entre las dos.'''
+        if url.endswith('.xml'):
+            return url[:-4]
+        m = re.match(r'^(.*/book/show/\d+)(?:[-/][^?#]*)?$', url)
+        if m:
+            return m.group(1) + '.xml'
+        return url
+
     def get_details(self):
         try:
             self.log.info('Goodreads book url: %r' % self.url)
             raw = self.browser.open_novisit(self.url, timeout=self.timeout).read().strip()
         except Exception as e:
-            if callable(getattr(e, 'getcode', None)) and e.getcode() == 404:
+            code = self._http_code(e)
+            if code == 404:
                 self.log.error('URL malformed: %r' % self.url)
-                return
+                return False
             attr = getattr(e, 'args', [None])
             attr = attr if attr else [None]
             if isinstance(attr[0], socket.timeout):
                 self.log.error('Goodreads timed out. Try again later.')
-            else:
-                self.log.exception('Failed to make details query: %r' % self.url)
+                return False
+            if code in TRANSIENT_HTTP_CODES:
+                # NO es "el libro no existe": el borde de Goodreads ha
+                # rechazado esta peticion. Antes se devolvia False, asi que el
+                # bucle de reintentos de run() moria en el intento #1 pese a
+                # estar escrito justo para este caso. Ademas se alterna la
+                # variante de URL, porque el WAF acepta o rechaza cada una por
+                # separado.
+                other = self._other_url_flavour(self.url)
+                self.log.error('Goodreads devolvio HTTP %s en %r; se reintenta con %r'
+                               % (code, self.url, other))
+                self.url = other
+                return True
+            self.log.exception('Failed to make details query: %r' % self.url)
             return False
 
         raw_utf8 = raw.decode('utf-8', errors='replace')
@@ -189,6 +245,125 @@ class Worker(Thread):
         except Exception:
             self.log.exception('Failed reading book json from: %r' % self.url)
             return False
+
+    # ---------- sinopsis prestada de otra edicion de la misma obra ----------
+
+    def _description_text(self, html):
+        '''Texto plano de una sinopsis en HTML, para poder medirla.'''
+        if not html:
+            return ''
+        text = re.sub(r'<[^>]+>', ' ', html)
+        text = text.replace('&nbsp;', ' ').replace('&#160;', ' ')
+        return re.sub(r'\s+', ' ', text).strip()
+
+    def _is_real_description(self, html):
+        '''False para las fichas sin sinopsis de verdad: vacias, marcadores tipo
+        "Coming soon..." o cuatro palabras sueltas.'''
+        text = self._description_text(html)
+        if not text:
+            return False
+        if PLACEHOLDER_DESCRIPTION_RE.match(text):
+            return False
+        return len(text) >= MIN_REAL_DESCRIPTION
+
+    def editions_url(self, work_json):
+        '''URL de la lista de ediciones de la obra. El propio JSON la trae en
+        Work.editions.webUrl; si no, se compone con el legacyId de la obra
+        (el id numerico antiguo, que es el que usa /work/editions/).'''
+        if not work_json:
+            return None
+        try:
+            url = (work_json.get('editions') or {}).get('webUrl')
+            if url:
+                return url
+        except Exception:
+            pass
+        legacy = work_json.get('legacyId')
+        if legacy:
+            return WORK_EDITIONS_URL.format(legacy_work_id=legacy)
+        return None
+
+    def sibling_edition_ids(self, url, own_id, want_lang):
+        '''Ids de las demas ediciones de la obra, en el orden de la pagina.
+        Se descartan las de otro idioma cuando la ficha lo declara ("Edition
+        language: German"), para no traerse la sinopsis en aleman de un libro
+        en ingles.'''
+        try:
+            data = self.browser.open_novisit(
+                url, timeout=min(self.timeout, EDITIONS_TIMEOUT)).read()
+            root = fromstring(clean_ascii_chars(
+                data.decode('utf-8', errors='replace').strip()))
+        except Exception:
+            self.log.warn('No se pudo leer la lista de ediciones: %s' % url)
+            return []
+        ids = []
+        for row in root.xpath('//div[contains(@class, "elementList")]'):
+            try:
+                href = row.xpath('.//a[contains(@class, "bookTitle")]/@href')
+                if not href:
+                    continue
+                m = re.search(r'/show/(\d+)', href[0])
+                if not m:
+                    continue
+                bid = m.group(1)
+                if bid == own_id or bid in ids:
+                    continue
+                if want_lang:
+                    ml = re.search(r'Edition language:\s*([^\n<]+)',
+                                   row.text_content())
+                    if ml:
+                        name = ml.group(1).strip()
+                        code = self.lang_map.get(name) or canonicalize_lang(name)
+                        if code and code != want_lang:
+                            continue
+                ids.append(bid)
+            except Exception:
+                continue
+        return ids
+
+    def fetch_edition_description(self, book_id):
+        '''Sinopsis de otra ficha, o None. Solo se parsea la descripcion: el
+        resto de metadatos sigue viniendo de la ficha elegida.'''
+        url = self.plugin.get_details_url(book_id)
+        for attempt in (0, 1):
+            try:
+                raw = self.browser.open_novisit(url, timeout=self.timeout).read().strip()
+            except Exception as e:
+                if attempt == 0 and self._http_code(e) in TRANSIENT_HTTP_CODES:
+                    url = self._other_url_flavour(url)
+                    time.sleep(0.5)
+                    continue
+                return None
+            try:
+                (book_json, _s, _c, _w) = self.parse_book_json(
+                    parse_html(raw.decode('utf-8', errors='replace')))
+                if not book_json:
+                    return None
+                html = self.parse_comments(book_json)
+                return html if self._is_real_description(html) else None
+            except Exception:
+                return None
+        return None
+
+    def borrow_description(self, work_json, own_id, mi):
+        url = self.editions_url(work_json)
+        if not url:
+            return None
+        want_lang = getattr(mi, 'language', None)
+        if want_lang in (None, '', 'und'):
+            want_lang = None
+        ids = self.sibling_edition_ids(url, own_id, want_lang)[:MAX_SIBLING_EDITIONS]
+        if not ids:
+            return None
+        self.log.info('[%s] sin sinopsis propia; se prueban las ediciones '
+                      'hermanas de la obra: %s' % (own_id, ids))
+        for bid in ids:
+            html = self.fetch_edition_description(bid)
+            if html:
+                self.log.info('[%s] sinopsis tomada de la edicion %s' % (own_id, bid))
+                return html
+        self.log.info('[%s] ninguna edicion hermana tiene sinopsis' % own_id)
+        return None
 
     def parse_book_json(self, root):
         script_node = root.xpath('//script[@id="__NEXT_DATA__"]')
@@ -318,6 +493,16 @@ class Worker(Thread):
                 mi.language = lang
         except Exception:
             self.log.exception('Error parsing language')
+
+        # Va DESPUES del idioma a proposito: para no traerse la sinopsis de una
+        # edicion en otra lengua hay que saber antes en que lengua esta esta.
+        try:
+            if not self._is_real_description(getattr(mi, 'comments', None)):
+                borrowed = self.borrow_description(work_json, goodreads_id, mi)
+                if borrowed:
+                    mi.comments = borrowed
+        except Exception:
+            self.log.exception('Error borrowing description from sibling editions')
 
         mi.source_relevance = self.relevance
         if self.goodreads_id is not None:
